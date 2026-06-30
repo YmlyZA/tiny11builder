@@ -36,6 +36,11 @@ param(
     [switch]$Yes
 )
 
+# Normalize comma-separated values so -Keep "Paint,Camera" (one quoted token)
+# behaves the same as -Keep Paint,Camera (a native array). @() keeps them arrays when empty.
+$Keep   = @($Keep   | ForEach-Object { $_ -split ',' } | Where-Object { $_ -ne '' })
+$Remove = @($Remove | ForEach-Object { $_ -split ',' } | Where-Object { $_ -ne '' })
+
 if ((Get-ExecutionPolicy) -eq 'Restricted') {
     Write-Host "Your current PowerShell Execution Policy is set to Restricted, which prevents scripts from running. Do you want to change it to RemoteSigned? (yes/no)"
     $response = Read-Host

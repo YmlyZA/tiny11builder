@@ -97,6 +97,38 @@ You will be asked during image creation if you want to enable .net 3.5 support!
 
 ---
 
+## tiny11 Core — limitations by design
+
+tiny11 Core is a deliberately minimal, **non-serviceable** image for testing, scripting, and VMs.
+The following are by design, not bugs:
+
+- **No Microsoft Store app installation.** Store apps need Windows Update access, retained
+  framework dependencies, and serviceability — all of which Core removes. If you need the Store,
+  use `tiny11maker.ps1`.
+- **No Windows Defender** (disabled).
+- **No Windows Update** (disabled; re-enabling on a gutted component store would break the system).
+- **Not serviceable** — you cannot add languages, updates, or features after creation.
+
+### Optional utilities (`-Keep` / `-Remove`)
+
+Standalone utility apps can be tailored. Defaults: `Terminal`, `Calculator`, `Notepad`, `Photos`
+are **kept**; `Paint`, `Camera`, `SoundRecorder`, `StickyNotes`, `Clock`, `MediaPlayer`,
+`MoviesTV`, `SnippingTool` are **removed**.
+
+- Retain a default-removed utility: `-Keep Paint,Camera`
+- Drop a default-kept utility: `-Remove Calculator,Photos`
+- Without `-Yes`, an interactive picker lets you toggle each one.
+
+### Unattended / batch builds
+
+```powershell
+.\tiny11Coremaker.ps1 -ISO E -SCRATCH D -Index 1 -EnableNet35 -Keep Paint -Remove Photos -Yes
+```
+
+`-Yes` runs non-interactively and requires `-ISO` and `-Index`.
+
+---
+
 ## Known issues:
 - Although Edge is removed, there are some remnants in the Settings, but the app in itself is deleted. 
 - You might have to update Winget before being able to install any apps, using Microsoft Store.

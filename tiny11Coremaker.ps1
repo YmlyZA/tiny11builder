@@ -58,6 +58,62 @@ function Dismount-OfflineImage {
     }
 }
 
+function Get-OptionalUtilities {
+    # Single source of truth for user-selectable standalone utility apps.
+    # Name = friendly token used by -Keep/-Remove and the picker.
+    # Prefixes = provisioned-Appx name prefixes. Default = 'Keep' or 'Remove'.
+    @(
+        [pscustomobject]@{ Name = 'Terminal';      Prefixes = @('Microsoft.WindowsTerminal');             Default = 'Keep'   }
+        [pscustomobject]@{ Name = 'Calculator';    Prefixes = @('Microsoft.WindowsCalculator');           Default = 'Keep'   }
+        [pscustomobject]@{ Name = 'Notepad';       Prefixes = @('Microsoft.WindowsNotepad');              Default = 'Keep'   }
+        [pscustomobject]@{ Name = 'Photos';        Prefixes = @('Microsoft.Windows.Photos');              Default = 'Keep'   }
+        [pscustomobject]@{ Name = 'Paint';         Prefixes = @('Microsoft.Paint', 'Microsoft.MSPaint');  Default = 'Remove' }
+        [pscustomobject]@{ Name = 'Camera';        Prefixes = @('Microsoft.WindowsCamera');               Default = 'Remove' }
+        [pscustomobject]@{ Name = 'SoundRecorder'; Prefixes = @('Microsoft.WindowsSoundRecorder');        Default = 'Remove' }
+        [pscustomobject]@{ Name = 'StickyNotes';   Prefixes = @('Microsoft.MicrosoftStickyNotes');        Default = 'Remove' }
+        [pscustomobject]@{ Name = 'Clock';         Prefixes = @('Microsoft.WindowsAlarms');               Default = 'Remove' }
+        [pscustomobject]@{ Name = 'MediaPlayer';   Prefixes = @('Microsoft.ZuneMusic');                   Default = 'Remove' }
+        [pscustomobject]@{ Name = 'MoviesTV';      Prefixes = @('Microsoft.ZuneVideo');                   Default = 'Remove' }
+        [pscustomobject]@{ Name = 'SnippingTool';  Prefixes = @('Microsoft.ScreenSketch');                Default = 'Remove' }
+    )
+}
+
+function Resolve-OptionalUtilities {
+    # Resolve the keep/remove state of every optional utility from its default,
+    # overridden by -Keep (force keep) and -Remove (force drop). Returns the list
+    # of Appx prefixes to remove and the names kept. Throws on an unknown name or
+    # a name present in both lists. Name matching is case-insensitive (PowerShell
+    # -contains on strings is case-insensitive by default).
+    param(
+        [string[]]$Keep = @(),
+        [string[]]$Remove = @()
+    )
+    $table = Get-OptionalUtilities
+    $valid = $table.Name
+    foreach ($n in @($Keep + $Remove)) {
+        if ($valid -notcontains $n) {
+            throw "Unknown optional utility '$n'. Valid names: $($valid -join ', ')"
+        }
+    }
+    $conflict = $Keep | Where-Object { $Remove -contains $_ }
+    if ($conflict) {
+        throw "Optional utility '$($conflict -join ', ')' cannot be in both -Keep and -Remove."
+    }
+    $removePrefixes = New-Object System.Collections.Generic.List[string]
+    $keptNames      = New-Object System.Collections.Generic.List[string]
+    foreach ($u in $table) {
+        $state = $u.Default
+        if ($Keep   -contains $u.Name) { $state = 'Keep' }
+        if ($Remove -contains $u.Name) { $state = 'Remove' }
+        if ($state -eq 'Remove') { $u.Prefixes | ForEach-Object { $removePrefixes.Add($_) } }
+        else                     { $keptNames.Add($u.Name) }
+    }
+    [pscustomobject]@{
+        RemovePrefixes = $removePrefixes.ToArray()
+        KeptNames      = $keptNames.ToArray()
+    }
+}
+
 Start-Transcript -Path "$PSScriptRoot\tiny11.log"
 # Ask the user for input
 Write-Host "Welcome to tiny11 core builder! BETA 09-05-25"

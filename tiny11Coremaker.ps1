@@ -105,10 +105,11 @@ function Dismount-OfflineImage {
     # a stuck mount point.
     param([string]$MountDir)
     if (-not $MountDir) { return }
-    # Test-Path / Join-Path throw DriveNotFoundException when the drive itself is gone;
-    # a finally-block helper must never throw, so swallow that and bail.
+    # Use string concatenation, not Join-Path: Join-Path resolves the PSDrive and
+    # raises DriveNotFound when the drive is gone. A finally-block helper must never
+    # throw (or print a stray error), so concat + a backstop catch keep it silent.
     $mounted = $false
-    try { $mounted = Test-Path (Join-Path $MountDir 'Windows') -ErrorAction Stop } catch { return }
+    try { $mounted = Test-Path "$MountDir\Windows" } catch { return }
     if ($mounted) {
         Write-Host "Cleanup: discarding a still-mounted image at $MountDir ..."
         & dism.exe /English /unmount-image "/mountdir:$MountDir" /discard 2>&1 | Out-Null

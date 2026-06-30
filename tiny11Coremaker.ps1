@@ -1,3 +1,41 @@
+#requires -Version 5.1
+<#
+.SYNOPSIS
+    tiny11 Core image builder - a minimal, NON-SERVICEABLE Windows 11 image for
+    testing, scripting, and VMs.
+
+.DESCRIPTION
+    By design this image cannot install Microsoft Store apps, has no Defender, no
+    Windows Update, and cannot be serviced (no adding languages/updates/features).
+    If you need any of those, use tiny11maker.ps1 instead.
+
+.PARAMETER ISO
+    Drive letter of the mounted Windows 11 image (e.g. E).
+.PARAMETER SCRATCH
+    Scratch/work drive letter. Defaults to the system drive.
+.PARAMETER Index
+    Image index to build.
+.PARAMETER EnableNet35
+    Enable .NET 3.5 without prompting.
+.PARAMETER Keep
+    Comma-separated optional utilities to RETAIN that default to removed
+    (Paint, Camera, SoundRecorder, StickyNotes, Clock, MediaPlayer, MoviesTV, SnippingTool).
+.PARAMETER Remove
+    Comma-separated optional utilities to DROP that default to kept
+    (Terminal, Calculator, Notepad, Photos).
+.PARAMETER Yes
+    Non-interactive: skip confirmation prompts and the utility picker; requires -ISO and -Index.
+#>
+param(
+    [ValidatePattern('^[c-zC-Z]$')][string]$ISO,
+    [ValidatePattern('^[c-zC-Z]$')][string]$SCRATCH,
+    [int]$Index,
+    [switch]$EnableNet35,
+    [string[]]$Keep = @(),
+    [string[]]$Remove = @(),
+    [switch]$Yes
+)
+
 if ((Get-ExecutionPolicy) -eq 'Restricted') {
     Write-Host "Your current PowerShell Execution Policy is set to Restricted, which prevents scripts from running. Do you want to change it to RemoteSigned? (yes/no)"
     $response = Read-Host
@@ -19,7 +57,16 @@ if (! $myWindowsPrincipal.IsInRole($adminRole))
 {
     Write-Host "Restarting Tiny11 image creator as admin in a new window, you can close this one."
     $newProcess = new-object System.Diagnostics.ProcessStartInfo "PowerShell";
-    $newProcess.Arguments = $myInvocation.MyCommand.Definition;
+    # Forward parameters so the elevated instance does not fall back to prompting.
+    $argList = "-File `"$($myInvocation.MyCommand.Definition)`""
+    if ($ISO)        { $argList += " -ISO $ISO" }
+    if ($SCRATCH)    { $argList += " -SCRATCH $SCRATCH" }
+    if ($Index)      { $argList += " -Index $Index" }
+    if ($EnableNet35){ $argList += " -EnableNet35" }
+    if ($Keep)       { $argList += " -Keep $($Keep -join ',')" }
+    if ($Remove)     { $argList += " -Remove $($Remove -join ',')" }
+    if ($Yes)        { $argList += " -Yes" }
+    $newProcess.Arguments = $argList;
     $newProcess.Verb = "runas";
     [System.Diagnostics.Process]::Start($newProcess);
     exit
@@ -140,15 +187,23 @@ Start-Transcript -Path "$PSScriptRoot\tiny11.log"
 # Ask the user for input
 Write-Host "Welcome to tiny11 core builder! BETA 09-05-25"
 Write-Host "This script generates a significantly reduced Windows 11 image. However, it's not suitable for regular use due to its lack of serviceability - you can't add languages, updates, or features post-creation. tiny11 Core is not a full Windows 11 substitute but a rapid testing or development tool, potentially useful for VM environments."
-Write-Host "Do you want to continue? (y/n)"
-$continueChoice = Read-Host
+if ($Yes) { $continueChoice = 'y' } else {
+    Write-Host "Do you want to continue? (y/n)"
+    $continueChoice = Read-Host
+}
 
 if ($continueChoice -eq 'y') {
     Write-Host "Off we go..."
 Start-Sleep -Seconds 3
 Clear-Host
 
-$mainOSDrive = $env:SystemDrive
+if ($SCRATCH) { $mainOSDrive = $SCRATCH + ":" } else { $mainOSDrive = $env:SystemDrive }
+# Validate optional-utility names early so a bad -Keep/-Remove fails before any work.
+$null = Resolve-OptionalUtilities -Keep $Keep -Remove $Remove
+if ($Yes) {
+    if (-not $ISO)   { throw "-Yes requires -ISO (no interactive prompt available)." }
+    if (-not $Index) { throw "-Yes requires -Index (no interactive prompt available)." }
+}
 # This script always works on the system drive; $ScratchDisk is kept as an
 # alias of $mainOSDrive so the registry/oscdimg sections that reference it
 # resolve to a real, absolute path instead of an empty string.
@@ -163,7 +218,9 @@ if (-not (Test-Path -Path "$PSScriptRoot\autounattend.xml")) {
     Invoke-RestMethod "https://raw.githubusercontent.com/ntdevlabs/tiny11builder/refs/heads/main/autounattend.xml" -OutFile "$PSScriptRoot\autounattend.xml"
 }
 New-Item -ItemType Directory -Force -Path "$mainOSDrive\tiny11\sources" > $null
-$DriveLetter = Read-Host "Please enter the drive letter for the Windows 11 image"
+if ($ISO) { $DriveLetter = $ISO } else {
+    $DriveLetter = Read-Host "Please enter the drive letter for the Windows 11 image"
+}
 $DriveLetter = $DriveLetter + ":"
 
 # Everything from here on touches a mounted image and/or loaded offline hives.
@@ -176,7 +233,7 @@ if ((Test-Path "$DriveLetter\sources\boot.wim") -eq $false -or (Test-Path "$Driv
     if ((Test-Path "$DriveLetter\sources\install.esd") -eq $true) {
         Write-Host "Found install.esd, converting to install.wim..."
         &  'dism' '/English' "/Get-WimInfo" "/wimfile:$DriveLetter\sources\install.esd"
-        $index = Read-Host "Please enter the image index"
+        if ($Index) { $index = $Index } else { $index = Read-Host "Please enter the image index" }
         Write-Host ' '
         Write-Host 'Converting install.esd to install.wim. This may take a while...'
         Invoke-Dism /Export-Image /SourceImageFile:"$DriveLetter\sources\install.esd" /SourceIndex:$index /DestinationImageFile:"$mainOSDrive\tiny11\sources\install.wim" /Compress:max /CheckIntegrity
@@ -196,7 +253,7 @@ Start-Sleep -Seconds 2
 Clear-Host
 Write-Host "Getting image information:"
 &  'dism' '/English' "/Get-WimInfo" "/wimfile:$mainOSDrive\tiny11\sources\install.wim"
-$index = Read-Host "Please enter the image index"
+if ($Index) { $index = $Index } else { $index = Read-Host "Please enter the image index" }
 Write-Host "Mounting Windows image. This may take a while."
 $wimFilePath = "$($env:SystemDrive)\tiny11\sources\install.wim" 
 & takeown "/F" $wimFilePath 
@@ -300,8 +357,12 @@ foreach ($packagePattern in $packagePatterns) {
     }
 }
 
-Write-Host "Do you want to enable .NET 3.5? This cannot be done after the image has been created! (y/n)"
-$enableNet35 = Read-Host
+if ($EnableNet35) { $enableNet35 = 'y' }
+elseif ($Yes)     { $enableNet35 = 'n' }
+else {
+    Write-Host "Do you want to enable .NET 3.5? This cannot be done after the image has been created! (y/n)"
+    $enableNet35 = Read-Host
+}
 
 if ($enableNet35 -eq 'y') {
     Write-Host "Enabling .NET 3.5..."

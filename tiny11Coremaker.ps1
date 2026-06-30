@@ -310,7 +310,85 @@ $packages = & 'dism' '/English' "/image:$($env:SystemDrive)\scratchdir" '/Get-Pr
             $matches[1]
         }
     }
-$packagePrefixes = 'Clipchamp.Clipchamp_', 'Microsoft.BingNews_', 'Microsoft.BingWeather_', 'Microsoft.GamingApp_', 'Microsoft.GetHelp_', 'Microsoft.Getstarted_', 'Microsoft.MicrosoftOfficeHub_', 'Microsoft.MicrosoftSolitaireCollection_', 'Microsoft.People_', 'Microsoft.PowerAutomateDesktop_', 'Microsoft.Todos_', 'Microsoft.WindowsAlarms_', 'microsoft.windowscommunicationsapps_', 'Microsoft.WindowsFeedbackHub_', 'Microsoft.WindowsMaps_', 'Microsoft.WindowsSoundRecorder_', 'Microsoft.Xbox.TCUI_', 'Microsoft.XboxGamingOverlay_', 'Microsoft.XboxGameOverlay_', 'Microsoft.XboxSpeechToTextOverlay_', 'Microsoft.YourPhone_', 'Microsoft.ZuneMusic_', 'Microsoft.ZuneVideo_', 'MicrosoftCorporationII.MicrosoftFamily_', 'MicrosoftCorporationII.QuickAssist_', 'MicrosoftTeams_', 'Microsoft.549981C3F5F10_', 'Microsoft.Windows.Copilot', 'MSTeams_', 'Microsoft.OutlookForWindows_', 'Microsoft.Windows.Teams_', 'Microsoft.Copilot_'
+# Always-remove bloat. The 12 optional standalone utilities (Terminal, Calculator,
+# Notepad, Photos, Paint, Camera, SoundRecorder, StickyNotes, Clock, MediaPlayer,
+# MoviesTV, SnippingTool) are handled separately in the next block via
+# Get-OptionalUtilities / the picker / -Keep / -Remove, so they must NOT appear here.
+$packagePrefixes = @(
+    'Clipchamp.Clipchamp_',
+    'Microsoft.BingNews_',
+    'Microsoft.BingSearch_',
+    'Microsoft.BingWeather_',
+    'Microsoft.GamingApp_',
+    'Microsoft.GetHelp_',
+    'Microsoft.Getstarted_',
+    'Microsoft.MicrosoftOfficeHub_',
+    'Microsoft.MicrosoftSolitaireCollection_',
+    'Microsoft.People_',
+    'Microsoft.PowerAutomateDesktop_',
+    'Microsoft.Todos_',
+    'microsoft.windowscommunicationsapps_',
+    'Microsoft.WindowsFeedbackHub_',
+    'Microsoft.WindowsMaps_',
+    'Microsoft.Xbox.TCUI_',
+    'Microsoft.XboxGamingOverlay_',
+    'Microsoft.XboxGameOverlay_',
+    'Microsoft.XboxSpeechToTextOverlay_',
+    'Microsoft.XboxIdentityProvider_',
+    'Microsoft.YourPhone_',
+    'MicrosoftCorporationII.MicrosoftFamily_',
+    'MicrosoftCorporationII.QuickAssist_',
+    'MicrosoftTeams_',
+    'MSTeams_',
+    'Microsoft.Windows.Teams_',
+    'Microsoft.549981C3F5F10_',
+    'Microsoft.Copilot_',
+    'Microsoft.Windows.Copilot',
+    'Microsoft.Windows.DevHome_',
+    'Microsoft.Windows.CrossDevice_',
+    'Microsoft.OutlookForWindows_',
+    'MicrosoftWindows.Client.WebExperience_'
+)
+if ($Yes) {
+    $picked = Resolve-OptionalUtilities -Keep $Keep -Remove $Remove
+} else {
+    Write-Host ""
+    Write-Host "Optional utilities (default state shown). Toggle any you want to change:"
+    $utils = Get-OptionalUtilities
+    $state = @{}
+    for ($i = 0; $i -lt $utils.Count; $i++) {
+        $u = $utils[$i]
+        $s = $u.Default
+        if ($Keep   -contains $u.Name) { $s = 'Keep' }
+        if ($Remove -contains $u.Name) { $s = 'Remove' }
+        $state[$u.Name] = $s
+        Write-Host ("  {0,2}. [{1,-6}] {2}" -f ($i + 1), $s, $u.Name)
+    }
+    $answer = Read-Host "Enter numbers/names to TOGGLE (comma-separated), or press Enter to accept"
+    if ($answer.Trim()) {
+        foreach ($tokenRaw in ($answer -split ',')) {
+            $token = $tokenRaw.Trim()
+            if (-not $token) { continue }
+            $name = $null
+            if ($token -match '^[0-9]+$' -and [int]$token -ge 1 -and [int]$token -le $utils.Count) {
+                $name = $utils[[int]$token - 1].Name
+            } else {
+                $m = $utils | Where-Object { $_.Name -eq $token }
+                if ($m) { $name = $m.Name }
+            }
+            if ($name) {
+                $state[$name] = if ($state[$name] -eq 'Keep') { 'Remove' } else { 'Keep' }
+            } else {
+                Write-Host "  (ignoring unknown entry '$token')"
+            }
+        }
+    }
+    $keepNames   = @($utils | Where-Object { $state[$_.Name] -eq 'Keep' }   | ForEach-Object { $_.Name })
+    $removeNames = @($utils | Where-Object { $state[$_.Name] -eq 'Remove' } | ForEach-Object { $_.Name })
+    $picked = Resolve-OptionalUtilities -Keep $keepNames -Remove $removeNames
+}
+$packagePrefixes = @($packagePrefixes) + @($picked.RemovePrefixes)
+if ($picked.KeptNames) { Write-Host "Keeping optional utilities: $($picked.KeptNames -join ', ')" }
 
 $packagesToRemove = $packages | Where-Object {
     $packageName = $_

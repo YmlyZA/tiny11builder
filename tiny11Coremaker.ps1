@@ -282,6 +282,15 @@ try {
     # writable. Note it verbosely instead of leaving an empty catch.
     Write-Verbose "Could not clear read-only on $wimFilePath : $_"
 }
+# A previous interrupted/failed run can leave scratchdir populated or holding an
+# orphaned WIM mount; DISM refuses to mount into a non-empty directory. Clean up
+# first: clear orphaned mountpoints, discard a leftover mount at scratchdir if one
+# looks present, then remove and recreate the directory empty. All best-effort.
+& dism.exe /English /Cleanup-Mountpoints 2>&1 | Out-Null
+if (Test-Path "$mainOSDrive\scratchdir\Windows") {
+    & dism.exe /English /Unmount-Image "/MountDir:$mainOSDrive\scratchdir" /Discard 2>&1 | Out-Null
+}
+Remove-Item -Path "$mainOSDrive\scratchdir" -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path "$mainOSDrive\scratchdir" > $null
 Invoke-Dism /English /mount-image "/imagefile:$mainOSDrive\tiny11\sources\install.wim" "/index:$imageIndex" "/mountdir:$mainOSDrive\scratchdir"
 

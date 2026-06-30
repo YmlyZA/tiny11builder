@@ -39,6 +39,10 @@ $r = Resolve-OptionalUtilities
 Check 'defaults keep Terminal'        ($r.KeptNames -contains 'Terminal')
 Check 'defaults remove Paint prefix'  ($r.RemovePrefixes -contains 'Microsoft.Paint')
 Check 'defaults do NOT remove Terminal' (-not ($r.RemovePrefixes -contains 'Microsoft.WindowsTerminal'))
+Check 'defaults keep Calculator' ($r.KeptNames -contains 'Calculator')
+Check 'defaults keep Notepad'    ($r.KeptNames -contains 'Notepad')
+Check 'defaults keep Photos'     ($r.KeptNames -contains 'Photos')
+Check 'defaults remove Paint MSPaint prefix' ($r.RemovePrefixes -contains 'Microsoft.MSPaint')
 
 Write-Host '== Resolve overrides =='
 $r = Resolve-OptionalUtilities -Keep @('Paint')
@@ -47,6 +51,8 @@ $r = Resolve-OptionalUtilities -Remove @('Terminal')
 Check '-Remove Terminal drops it' ($r.RemovePrefixes -contains 'Microsoft.WindowsTerminal')
 $r = Resolve-OptionalUtilities -Keep @('paint')
 Check '-Keep is case-insensitive' (-not ($r.RemovePrefixes -contains 'Microsoft.Paint'))
+$r = Resolve-OptionalUtilities -Remove @('terminal')
+Check '-Remove is case-insensitive' ($r.RemovePrefixes -contains 'Microsoft.WindowsTerminal')
 
 Write-Host '== Resolve errors =='
 CheckThrows 'unknown name throws'        { Resolve-OptionalUtilities -Keep @('Nope') }

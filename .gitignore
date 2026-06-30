@@ -1,0 +1,15 @@
+# Build output
+tiny11.iso
+
+# Tool downloaded at runtime by the scripts (never committed)
+oscdimg.exe
+
+# Run transcripts / logs
+tiny11*.log
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Agent / workflow scratch (subagent briefs, reports, progress ledger)
+.superpowers/

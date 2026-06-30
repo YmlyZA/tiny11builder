@@ -58,6 +58,35 @@ Write-Host '== Resolve errors =='
 CheckThrows 'unknown name throws'        { Resolve-OptionalUtilities -Keep @('Nope') }
 CheckThrows 'name in both lists throws'  { Resolve-OptionalUtilities -Keep @('Paint') -Remove @('Paint') }
 
+Write-Host '== Assert-WinSxSRebuild =='
+$tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("winsxs_" + [guid]::NewGuid())
+# A complete fake rebuild: servicing stack + all required metadata folders.
+$null = New-Item -ItemType Directory -Path (Join-Path $tmp 'amd64_microsoft-windows-servicingstack_31bf3856ad364e35_x_none') -Force
+foreach ($d in 'Catalogs','Manifests','Fusion','FileMaps') {
+    $null = New-Item -ItemType Directory -Path (Join-Path $tmp $d) -Force
+}
+$ok = $true; try { Assert-WinSxSRebuild -Path $tmp } catch { $ok = $false }
+Check 'complete rebuild passes' $ok
+
+# Missing servicing stack -> throw.
+$noStack = Join-Path ([System.IO.Path]::GetTempPath()) ("winsxs_" + [guid]::NewGuid())
+foreach ($d in 'Catalogs','Manifests','Fusion','FileMaps') {
+    $null = New-Item -ItemType Directory -Path (Join-Path $noStack $d) -Force
+}
+CheckThrows 'missing servicing stack throws' { Assert-WinSxSRebuild -Path $noStack }
+
+# Missing a metadata folder -> throw.
+$noMeta = Join-Path ([System.IO.Path]::GetTempPath()) ("winsxs_" + [guid]::NewGuid())
+$null = New-Item -ItemType Directory -Path (Join-Path $noMeta 'amd64_microsoft-windows-servicingstack_x') -Force
+foreach ($d in 'Catalogs','Manifests','Fusion') {  # FileMaps intentionally missing
+    $null = New-Item -ItemType Directory -Path (Join-Path $noMeta $d) -Force
+}
+CheckThrows 'missing metadata folder throws' { Assert-WinSxSRebuild -Path $noMeta }
+
+CheckThrows 'missing path throws' { Assert-WinSxSRebuild -Path (Join-Path $tmp 'does-not-exist') }
+
+Remove-Item $tmp, $noStack, $noMeta -Recurse -Force -ErrorAction SilentlyContinue
+
 Write-Host ""
 Write-Host "RESULT: $script:pass passed, $script:fail failed"
 if ($script:fail) { exit 1 }

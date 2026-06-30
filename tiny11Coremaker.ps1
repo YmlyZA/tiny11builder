@@ -114,6 +114,28 @@ function Resolve-OptionalUtilities {
     }
 }
 
+function Assert-WinSxSRebuild {
+    # Integrity gate for the rebuilt WinSxS (WinSxS_edit) BEFORE the old WinSxS is
+    # deleted. The servicing stack is mandatory for boot/sysprep; the metadata
+    # folders are always present in a healthy component store. If anything critical
+    # is missing the allowlist did not match this build - abort rather than ship a
+    # non-bootable image (the caller's try/finally unloads hives and discards the
+    # mount).
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path $Path)) {
+        throw "WinSxS rebuild path not found: $Path"
+    }
+    $hasServicingStack = @(Get-ChildItem -Path $Path -Directory -Filter '*servicingstack*' -ErrorAction SilentlyContinue).Count -gt 0
+    if (-not $hasServicingStack) {
+        throw "WinSxS rebuild incomplete: no '*servicingstack*' directory under $Path. Aborting to avoid a non-bootable image."
+    }
+    $requiredMeta = 'Catalogs', 'Manifests', 'Fusion', 'FileMaps'
+    $missing = $requiredMeta | Where-Object { -not (Test-Path (Join-Path $Path $_)) }
+    if ($missing) {
+        throw "WinSxS rebuild incomplete: missing $($missing -join ', ') under $Path. Aborting to avoid a non-bootable image."
+    }
+}
+
 Start-Transcript -Path "$PSScriptRoot\tiny11.log"
 # Ask the user for input
 Write-Host "Welcome to tiny11 core builder! BETA 09-05-25"

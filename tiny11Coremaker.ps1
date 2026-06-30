@@ -240,29 +240,14 @@ Write-Host "Removing Edge:"
 Remove-Item -Path "$mainOSDrive\scratchdir\Program Files (x86)\Microsoft\Edge" -Recurse -Force > $null
 Remove-Item -Path "$mainOSDrive\scratchdir\Program Files (x86)\Microsoft\EdgeUpdate" -Recurse -Force > $null
 Remove-Item -Path "$mainOSDrive\scratchdir\Program Files (x86)\Microsoft\EdgeCore" -Recurse -Force > $null
-if ($architecture -eq 'amd64') {
-    $folderPath = Get-ChildItem -Path "$mainOSDrive\scratchdir\Windows\WinSxS" -Filter "amd64_microsoft-edge-webview_31bf3856ad364e35*" -Directory | Select-Object -ExpandProperty FullName
-
-    if ($folderPath) {
-        & 'takeown' '/f' $folderPath '/r' > $null
-        & icacls $folderPath  "/grant" "$($adminGroup.Value):(F)" '/T' '/C' > $null
-        Remove-Item -Path $folderPath -Recurse -Force > $null
-    } else {
-        Write-Host "Folder not found."
-    }
-} elseif ($architecture -eq 'arm64') {
-    $folderPath = Get-ChildItem -Path "$mainOSDrive\scratchdir\Windows\WinSxS" -Filter "arm64_microsoft-edge-webview_31bf3856ad364e35*" -Directory | Select-Object -ExpandProperty FullName
-
-    if ($folderPath) {
-        & 'takeown' '/f' $folderPath '/r'> $null
-        & icacls $folderPath  "/grant" "$($adminGroup.Value):(F)" '/T' '/C' > $null
-        Remove-Item -Path $folderPath -Recurse -Force > $null
-    } else {
-        Write-Host "Folder not found."
-    }
-} else {
-    Write-Host "Unknown architecture: $architecture"
-}
+# NOTE: the Edge WebView component under WinSxS is intentionally NOT deleted here.
+# tiny11 Core rebuilds WinSxS from an allowlist further down (copy allowlist to
+# WinSxS_edit -> delete the old WinSxS -> rename), and edge-webview is not in that
+# allowlist, so it is purged wholesale by the rebuild. Deleting it at this point
+# was redundant AND, because takeown/icacls don't reliably reclaim the nested
+# EBWebView files before the WinSxS-wide takeown runs, it produced ~900 "Access
+# denied" errors per run. The System32 copy below is a different path that the
+# rebuild does NOT cover, so that removal stays.
 & 'takeown' '/f' "$mainOSDrive\scratchdir\Windows\System32\Microsoft-Edge-Webview" '/r'
 & 'icacls' "$mainOSDrive\scratchdir\Windows\System32\Microsoft-Edge-Webview" '/grant' "$($adminGroup.Value):(F)" '/T' '/C'
 Remove-Item -Path "$mainOSDrive\scratchdir\Windows\System32\Microsoft-Edge-Webview" -Recurse -Force

@@ -1,0 +1,92 @@
+#requires -Version 5.1
+<#
+.SYNOPSIS
+    macOS/Windows-runnable unit tests for the pure helper functions in
+    tiny11Coremaker.ps1. Loads the function definitions via AST (no image needed).
+#>
+$repo = Split-Path -Parent $PSScriptRoot
+$script = Join-Path $repo 'tiny11Coremaker.ps1'
+
+# Load ONLY the function definitions from the real script.
+$tk = $null; $er = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$tk, [ref]$er)
+if ($er.Count) { throw "parse errors in $script" }
+$ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+    ForEach-Object { Invoke-Expression $_.Extent.Text }
+
+$script:pass = 0; $script:fail = 0
+function Check([string]$name, [bool]$cond) {
+    if ($cond) { Write-Host "  PASS: $name"; $script:pass++ }
+    else       { Write-Host "  FAIL: $name"; $script:fail++ }
+}
+function CheckThrows([string]$name, [scriptblock]$sb) {
+    $threw = $false
+    try { & $sb } catch { $threw = $true }
+    Check $name $threw
+}
+
+Write-Host '== Get-OptionalUtilities =='
+$table = Get-OptionalUtilities
+Check 'table has 12 entries' ($table.Count -eq 12)
+Check 'Terminal default Keep'   (($table | Where-Object Name -eq 'Terminal').Default   -eq 'Keep')
+Check 'Calculator default Keep' (($table | Where-Object Name -eq 'Calculator').Default -eq 'Keep')
+Check 'Notepad default Keep'    (($table | Where-Object Name -eq 'Notepad').Default    -eq 'Keep')
+Check 'Photos default Keep'     (($table | Where-Object Name -eq 'Photos').Default     -eq 'Keep')
+Check 'Paint default Remove'    (($table | Where-Object Name -eq 'Paint').Default      -eq 'Remove')
+
+Write-Host '== Resolve-OptionalUtilities defaults =='
+$r = Resolve-OptionalUtilities
+Check 'defaults keep Terminal'        ($r.KeptNames -contains 'Terminal')
+Check 'defaults remove Paint prefix'  ($r.RemovePrefixes -contains 'Microsoft.Paint')
+Check 'defaults do NOT remove Terminal' (-not ($r.RemovePrefixes -contains 'Microsoft.WindowsTerminal'))
+Check 'defaults keep Calculator' ($r.KeptNames -contains 'Calculator')
+Check 'defaults keep Notepad'    ($r.KeptNames -contains 'Notepad')
+Check 'defaults keep Photos'     ($r.KeptNames -contains 'Photos')
+Check 'defaults remove Paint MSPaint prefix' ($r.RemovePrefixes -contains 'Microsoft.MSPaint')
+
+Write-Host '== Resolve overrides =='
+$r = Resolve-OptionalUtilities -Keep @('Paint')
+Check '-Keep Paint retains it' (-not ($r.RemovePrefixes -contains 'Microsoft.Paint'))
+$r = Resolve-OptionalUtilities -Remove @('Terminal')
+Check '-Remove Terminal drops it' ($r.RemovePrefixes -contains 'Microsoft.WindowsTerminal')
+$r = Resolve-OptionalUtilities -Keep @('paint')
+Check '-Keep is case-insensitive' (-not ($r.RemovePrefixes -contains 'Microsoft.Paint'))
+$r = Resolve-OptionalUtilities -Remove @('terminal')
+Check '-Remove is case-insensitive' ($r.RemovePrefixes -contains 'Microsoft.WindowsTerminal')
+
+Write-Host '== Resolve errors =='
+CheckThrows 'unknown name throws'        { Resolve-OptionalUtilities -Keep @('Nope') }
+CheckThrows 'name in both lists throws'  { Resolve-OptionalUtilities -Keep @('Paint') -Remove @('Paint') }
+
+Write-Host '== Assert-WinSxSRebuild =='
+$tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("winsxs_" + [guid]::NewGuid())
+# A complete fake rebuild: servicing stack + all required metadata folders.
+$null = New-Item -ItemType Directory -Path (Join-Path $tmp 'amd64_microsoft-windows-servicingstack_31bf3856ad364e35_x_none') -Force
+foreach ($d in 'Catalogs','Manifests','Fusion','FileMaps') {
+    $null = New-Item -ItemType Directory -Path (Join-Path $tmp $d) -Force
+}
+$ok = $true; try { Assert-WinSxSRebuild -Path $tmp } catch { $ok = $false }
+Check 'complete rebuild passes' $ok
+
+# Missing servicing stack -> throw.
+$noStack = Join-Path ([System.IO.Path]::GetTempPath()) ("winsxs_" + [guid]::NewGuid())
+foreach ($d in 'Catalogs','Manifests','Fusion','FileMaps') {
+    $null = New-Item -ItemType Directory -Path (Join-Path $noStack $d) -Force
+}
+CheckThrows 'missing servicing stack throws' { Assert-WinSxSRebuild -Path $noStack }
+
+# Missing a metadata folder -> throw.
+$noMeta = Join-Path ([System.IO.Path]::GetTempPath()) ("winsxs_" + [guid]::NewGuid())
+$null = New-Item -ItemType Directory -Path (Join-Path $noMeta 'amd64_microsoft-windows-servicingstack_x') -Force
+foreach ($d in 'Catalogs','Manifests','Fusion') {  # FileMaps intentionally missing
+    $null = New-Item -ItemType Directory -Path (Join-Path $noMeta $d) -Force
+}
+CheckThrows 'missing metadata folder throws' { Assert-WinSxSRebuild -Path $noMeta }
+
+CheckThrows 'missing path throws' { Assert-WinSxSRebuild -Path (Join-Path $tmp 'does-not-exist') }
+
+Remove-Item $tmp, $noStack, $noMeta -Recurse -Force -ErrorAction SilentlyContinue
+
+Write-Host ""
+Write-Host "RESULT: $script:pass passed, $script:fail failed"
+if ($script:fail) { exit 1 }

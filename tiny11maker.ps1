@@ -38,6 +38,9 @@ if (-not $SCRATCH) {
 } else {
     $ScratchDisk = $SCRATCH + ":"
 }
+if (-not (Test-Path "$ScratchDisk\")) {
+    throw "Scratch location '$ScratchDisk' was not found. Pass -SCRATCH with an existing drive letter, or omit it to use the script folder."
+}
 
 #---------[ Functions ]---------#
 function Set-RegistryValue {
@@ -90,7 +93,12 @@ if (! $myWindowsPrincipal.IsInRole($adminRole))
 {
     Write-Output "Restarting Tiny11 image creator as admin in a new window, you can close this one."
     $newProcess = new-object System.Diagnostics.ProcessStartInfo "PowerShell";
-    $newProcess.Arguments = $myInvocation.MyCommand.Definition;
+    # Use -File so paths with spaces survive, and forward the parameters the
+    # user supplied so the elevated instance doesn't fall back to prompting.
+    $argList = "-File `"$($myInvocation.MyCommand.Definition)`""
+    if ($ISO)     { $argList += " -ISO $ISO" }
+    if ($SCRATCH) { $argList += " -SCRATCH $SCRATCH" }
+    $newProcess.Arguments = $argList;
     $newProcess.Verb = "runas";
     [System.Diagnostics.Process]::Start($newProcess);
     exit
@@ -122,6 +130,10 @@ do {
         Write-Output "Invalid drive letter. Please enter a letter between C and Z."
     }
 } while ($DriveLetter -notmatch '^[c-zC-Z]:$')
+
+if (-not (Test-Path "$DriveLetter\")) {
+    throw "Image drive '$DriveLetter' was not found. Mount the Windows 11 ISO and pass its drive letter via -ISO (or at the prompt)."
+}
 
 if ((Test-Path "$DriveLetter\sources\boot.wim") -eq $false -or (Test-Path "$DriveLetter\sources\install.wim") -eq $false) {
     if ((Test-Path "$DriveLetter\sources\install.esd") -eq $true) {
@@ -161,6 +173,15 @@ try {
     # This block will catch the error and suppress it.
 	Write-Error "$wimFilePath not found"
 }
+# A previous interrupted/failed run can leave scratchdir populated or holding an
+# orphaned WIM mount; mounting into a non-empty directory fails. Clean up first:
+# clear orphaned mountpoints, discard a leftover mount if one looks present, then
+# remove and recreate the directory empty. All best-effort.
+& dism.exe /English /Cleanup-Mountpoints 2>&1 | Out-Null
+if (Test-Path "$ScratchDisk\scratchdir\Windows") {
+    & dism.exe /English /Unmount-Image "/MountDir:$ScratchDisk\scratchdir" /Discard 2>&1 | Out-Null
+}
+Remove-Item -Path "$ScratchDisk\scratchdir" -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path "$ScratchDisk\scratchdir" > $null
 Mount-WindowsImage -ImagePath $ScratchDisk\tiny11\sources\install.wim -Index $index -Path $ScratchDisk\scratchdir
 

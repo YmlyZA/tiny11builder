@@ -1,3 +1,46 @@
+#requires -Version 5.1
+<#
+.SYNOPSIS
+    tiny11 Core image builder - a minimal, NON-SERVICEABLE Windows 11 image for
+    testing, scripting, and VMs.
+
+.DESCRIPTION
+    By design this image cannot install Microsoft Store apps, has no Defender, no
+    Windows Update, and cannot be serviced (no adding languages/updates/features).
+    If you need any of those, use tiny11maker.ps1 instead.
+
+.PARAMETER ISO
+    Drive letter of the mounted Windows 11 image (e.g. E).
+.PARAMETER SCRATCH
+    Scratch/work drive letter. Defaults to the system drive.
+.PARAMETER Index
+    Image index to build.
+.PARAMETER EnableNet35
+    Enable .NET 3.5 without prompting.
+.PARAMETER Keep
+    Comma-separated optional utilities to RETAIN that default to removed
+    (Paint, Camera, SoundRecorder, StickyNotes, Clock, MediaPlayer, MoviesTV, SnippingTool).
+.PARAMETER Remove
+    Comma-separated optional utilities to DROP that default to kept
+    (Terminal, Calculator, Notepad, Photos).
+.PARAMETER Yes
+    Non-interactive: skip confirmation prompts and the utility picker; requires -ISO and -Index.
+#>
+param(
+    [ValidatePattern('^[c-zC-Z]$')][string]$ISO,
+    [ValidatePattern('^[c-zC-Z]$')][string]$SCRATCH,
+    [int]$Index,
+    [switch]$EnableNet35,
+    [string[]]$Keep = @(),
+    [string[]]$Remove = @(),
+    [switch]$Yes
+)
+
+# Normalize comma-separated values so -Keep "Paint,Camera" (one quoted token)
+# behaves the same as -Keep Paint,Camera (a native array). @() keeps them arrays when empty.
+$Keep   = @($Keep   | ForEach-Object { $_ -split ',' } | Where-Object { $_ -ne '' })
+$Remove = @($Remove | ForEach-Object { $_ -split ',' } | Where-Object { $_ -ne '' })
+
 if ((Get-ExecutionPolicy) -eq 'Restricted') {
     Write-Host "Your current PowerShell Execution Policy is set to Restricted, which prevents scripts from running. Do you want to change it to RemoteSigned? (yes/no)"
     $response = Read-Host
@@ -19,46 +62,207 @@ if (! $myWindowsPrincipal.IsInRole($adminRole))
 {
     Write-Host "Restarting Tiny11 image creator as admin in a new window, you can close this one."
     $newProcess = new-object System.Diagnostics.ProcessStartInfo "PowerShell";
-    $newProcess.Arguments = $myInvocation.MyCommand.Definition;
+    # Forward parameters so the elevated instance does not fall back to prompting.
+    $argList = "-File `"$($myInvocation.MyCommand.Definition)`""
+    if ($ISO)        { $argList += " -ISO $ISO" }
+    if ($SCRATCH)    { $argList += " -SCRATCH $SCRATCH" }
+    if ($Index)      { $argList += " -Index $Index" }
+    if ($EnableNet35){ $argList += " -EnableNet35" }
+    if ($Keep)       { $argList += " -Keep $($Keep -join ',')" }
+    if ($Remove)     { $argList += " -Remove $($Remove -join ',')" }
+    if ($Yes)        { $argList += " -Yes" }
+    $newProcess.Arguments = $argList;
     $newProcess.Verb = "runas";
     [System.Diagnostics.Process]::Start($newProcess);
     exit
 }
-Start-Transcript -Path "$PSScriptRoot\tiny11.log" 
+
+#---------[ Helper functions ]---------#
+function Invoke-Dism {
+    # Run DISM and abort the script if it reports a non-zero exit code. Use only
+    # for load-bearing operations (mount / unmount / export / convert); package
+    # removal stays soft because some packages legitimately refuse to be removed.
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$DismArgs)
+    & dism.exe @DismArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "DISM failed (exit code $LASTEXITCODE): dism $($DismArgs -join ' ')"
+    }
+}
+
+function Remove-OfflineHives {
+    # Idempotently unload every offline hive this script loads. Safe to call even
+    # if some are not currently loaded (errors suppressed). The GC pass first
+    # releases any lingering handles so the unloads actually succeed.
+    [gc]::Collect(); [gc]::WaitForPendingFinalizers()
+    foreach ($hive in 'zCOMPONENTS', 'zDEFAULT', 'zNTUSER', 'zSOFTWARE', 'zSYSTEM') {
+        reg unload "HKLM\$hive" > $null 2>&1
+    }
+}
+
+function Dismount-OfflineImage {
+    # Safety-net dismount for finally blocks: if an image is still mounted at
+    # $MountDir, discard the (incomplete) changes so the host is never left with
+    # a stuck mount point.
+    param([string]$MountDir)
+    if (-not $MountDir) { return }
+    # Use string concatenation, not Join-Path: Join-Path resolves the PSDrive and
+    # raises DriveNotFound when the drive is gone. A finally-block helper must never
+    # throw (or print a stray error), so concat + a backstop catch keep it silent.
+    $mounted = $false
+    try { $mounted = Test-Path "$MountDir\Windows" } catch { return }
+    if ($mounted) {
+        Write-Host "Cleanup: discarding a still-mounted image at $MountDir ..."
+        & dism.exe /English /unmount-image "/mountdir:$MountDir" /discard 2>&1 | Out-Null
+    }
+}
+
+function Get-OptionalUtilities {
+    # Single source of truth for user-selectable standalone utility apps.
+    # Name = friendly token used by -Keep/-Remove and the picker.
+    # Prefixes = provisioned-Appx name prefixes. Default = 'Keep' or 'Remove'.
+    @(
+        [pscustomobject]@{ Name = 'Terminal';      Prefixes = @('Microsoft.WindowsTerminal');             Default = 'Keep'   }
+        [pscustomobject]@{ Name = 'Calculator';    Prefixes = @('Microsoft.WindowsCalculator');           Default = 'Keep'   }
+        [pscustomobject]@{ Name = 'Notepad';       Prefixes = @('Microsoft.WindowsNotepad');              Default = 'Keep'   }
+        [pscustomobject]@{ Name = 'Photos';        Prefixes = @('Microsoft.Windows.Photos');              Default = 'Keep'   }
+        [pscustomobject]@{ Name = 'Paint';         Prefixes = @('Microsoft.Paint', 'Microsoft.MSPaint');  Default = 'Remove' }
+        [pscustomobject]@{ Name = 'Camera';        Prefixes = @('Microsoft.WindowsCamera');               Default = 'Remove' }
+        [pscustomobject]@{ Name = 'SoundRecorder'; Prefixes = @('Microsoft.WindowsSoundRecorder');        Default = 'Remove' }
+        [pscustomobject]@{ Name = 'StickyNotes';   Prefixes = @('Microsoft.MicrosoftStickyNotes');        Default = 'Remove' }
+        [pscustomobject]@{ Name = 'Clock';         Prefixes = @('Microsoft.WindowsAlarms');               Default = 'Remove' }
+        [pscustomobject]@{ Name = 'MediaPlayer';   Prefixes = @('Microsoft.ZuneMusic');                   Default = 'Remove' }
+        [pscustomobject]@{ Name = 'MoviesTV';      Prefixes = @('Microsoft.ZuneVideo');                   Default = 'Remove' }
+        [pscustomobject]@{ Name = 'SnippingTool';  Prefixes = @('Microsoft.ScreenSketch');                Default = 'Remove' }
+    )
+}
+
+function Resolve-OptionalUtilities {
+    # Resolve the keep/remove state of every optional utility from its default,
+    # overridden by -Keep (force keep) and -Remove (force drop). Returns the list
+    # of Appx prefixes to remove and the names kept. Throws on an unknown name or
+    # a name present in both lists. Name matching is case-insensitive (PowerShell
+    # -contains on strings is case-insensitive by default).
+    param(
+        [string[]]$Keep = @(),
+        [string[]]$Remove = @()
+    )
+    $table = Get-OptionalUtilities
+    $valid = $table.Name
+    foreach ($n in @($Keep + $Remove)) {
+        if ($valid -notcontains $n) {
+            throw "Unknown optional utility '$n'. Valid names: $($valid -join ', ')"
+        }
+    }
+    $conflict = $Keep | Where-Object { $Remove -contains $_ }
+    if ($conflict) {
+        throw "Optional utility '$($conflict -join ', ')' cannot be in both -Keep and -Remove."
+    }
+    $removePrefixes = New-Object System.Collections.Generic.List[string]
+    $keptNames      = New-Object System.Collections.Generic.List[string]
+    foreach ($u in $table) {
+        $state = $u.Default
+        if ($Keep   -contains $u.Name) { $state = 'Keep' }
+        if ($Remove -contains $u.Name) { $state = 'Remove' }
+        if ($state -eq 'Remove') { $u.Prefixes | ForEach-Object { $removePrefixes.Add($_) } }
+        else                     { $keptNames.Add($u.Name) }
+    }
+    [pscustomobject]@{
+        RemovePrefixes = $removePrefixes.ToArray()
+        KeptNames      = $keptNames.ToArray()
+    }
+}
+
+function Assert-WinSxSRebuild {
+    # Integrity gate for the rebuilt WinSxS (WinSxS_edit) BEFORE the old WinSxS is
+    # deleted. The servicing stack is mandatory for boot/sysprep; the metadata
+    # folders are always present in a healthy component store. If anything critical
+    # is missing the allowlist did not match this build - abort rather than ship a
+    # non-bootable image (the caller's try/finally unloads hives and discards the
+    # mount).
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path $Path)) {
+        throw "WinSxS rebuild path not found: $Path"
+    }
+    $hasServicingStack = @(Get-ChildItem -Path $Path -Directory -Filter '*servicingstack*' -ErrorAction SilentlyContinue).Count -gt 0
+    if (-not $hasServicingStack) {
+        throw "WinSxS rebuild incomplete: no '*servicingstack*' directory under $Path. Aborting to avoid a non-bootable image."
+    }
+    $requiredMeta = 'Catalogs', 'Manifests', 'Fusion', 'FileMaps'
+    $missing = $requiredMeta | Where-Object { -not (Test-Path (Join-Path $Path $_)) }
+    if ($missing) {
+        throw "WinSxS rebuild incomplete: missing $($missing -join ', ') under $Path. Aborting to avoid a non-bootable image."
+    }
+}
+
+Start-Transcript -Path "$PSScriptRoot\tiny11.log"
 # Ask the user for input
 Write-Host "Welcome to tiny11 core builder! BETA 09-05-25"
 Write-Host "This script generates a significantly reduced Windows 11 image. However, it's not suitable for regular use due to its lack of serviceability - you can't add languages, updates, or features post-creation. tiny11 Core is not a full Windows 11 substitute but a rapid testing or development tool, potentially useful for VM environments."
-Write-Host "Do you want to continue? (y/n)"
-$input = Read-Host
+if ($Yes) { $continueChoice = 'y' } else {
+    Write-Host "Do you want to continue? (y/n)"
+    $continueChoice = Read-Host
+}
 
-if ($input -eq 'y') {
+if ($continueChoice -eq 'y') {
     Write-Host "Off we go..."
 Start-Sleep -Seconds 3
 Clear-Host
 
-$mainOSDrive = $env:SystemDrive
+if ($SCRATCH) { $mainOSDrive = $SCRATCH + ":" } else { $mainOSDrive = $env:SystemDrive }
+# Fail fast with a clear message if the scratch drive does not exist (a bad -SCRATCH
+# otherwise cascades into cryptic DISM 'Error: 3' / DriveNotFound failures).
+if (-not (Test-Path "$mainOSDrive\")) {
+    throw "Scratch drive '$mainOSDrive' was not found. Pass -SCRATCH with an existing drive letter, or omit it to use the system drive ($env:SystemDrive)."
+}
+# Validate optional-utility names early so a bad -Keep/-Remove fails before any work.
+$null = Resolve-OptionalUtilities -Keep $Keep -Remove $Remove
+if ($Yes) {
+    if (-not $ISO)   { throw "-Yes requires -ISO (no interactive prompt available)." }
+    if (-not $Index) { throw "-Yes requires -Index (no interactive prompt available)." }
+}
+# This script always works on the system drive; $ScratchDisk is kept as an
+# alias of $mainOSDrive so the registry/oscdimg sections that reference it
+# resolve to a real, absolute path instead of an empty string.
+$ScratchDisk = $mainOSDrive
 $hostArchitecture = $Env:PROCESSOR_ARCHITECTURE
-New-Item -ItemType Directory -Force -Path "$mainOSDrive\tiny11\sources" >null
-$DriveLetter = Read-Host "Please enter the drive letter for the Windows 11 image"
+
+# Ensure the unattend answer file exists locally; it is injected into Sysprep later
+# for the OOBE / local-account bypass. The Core script used to assume it was already
+# present and would throw "Cannot find path ...autounattend.xml" when run standalone.
+if (-not (Test-Path -Path "$PSScriptRoot\autounattend.xml")) {
+    Write-Host "autounattend.xml not found locally, downloading..."
+    Invoke-RestMethod "https://raw.githubusercontent.com/ntdevlabs/tiny11builder/refs/heads/main/autounattend.xml" -OutFile "$PSScriptRoot\autounattend.xml"
+}
+New-Item -ItemType Directory -Force -Path "$mainOSDrive\tiny11\sources" > $null
+if ($ISO) { $DriveLetter = $ISO } else {
+    $DriveLetter = Read-Host "Please enter the drive letter for the Windows 11 image"
+}
 $DriveLetter = $DriveLetter + ":"
+if (-not (Test-Path "$DriveLetter\")) {
+    throw "Image drive '$DriveLetter' was not found. Mount the Windows 11 ISO and pass its drive letter via -ISO (or at the prompt)."
+}
+
+# Everything from here on touches a mounted image and/or loaded offline hives.
+# Wrap it so that ANY terminating failure still tears those down (see finally),
+# instead of leaving the host with a stuck mount or loaded hives.
+$script:buildFailed = $false
+try {
 
 if ((Test-Path "$DriveLetter\sources\boot.wim") -eq $false -or (Test-Path "$DriveLetter\sources\install.wim") -eq $false) {
     if ((Test-Path "$DriveLetter\sources\install.esd") -eq $true) {
         Write-Host "Found install.esd, converting to install.wim..."
         &  'dism' '/English' "/Get-WimInfo" "/wimfile:$DriveLetter\sources\install.esd"
-        $index = Read-Host "Please enter the image index"
+        if ($Index) { $imageIndex = $Index } else { $imageIndex = Read-Host "Please enter the image index" }
         Write-Host ' '
         Write-Host 'Converting install.esd to install.wim. This may take a while...'
-        & 'DISM' /Export-Image /SourceImageFile:"$DriveLetter\sources\install.esd" /SourceIndex:$index /DestinationImageFile:"$mainOSDrive\tiny11\sources\install.wim" /Compress:max /CheckIntegrity
+        Invoke-Dism /Export-Image /SourceImageFile:"$DriveLetter\sources\install.esd" /SourceIndex:$imageIndex /DestinationImageFile:"$mainOSDrive\tiny11\sources\install.wim" /Compress:max /CheckIntegrity
     } else {
-        Write-Host "Can't find Windows OS Installation files in the specified Drive Letter.."
-        Write-Host "Please enter the correct DVD Drive Letter.."
-        exit
+        throw "Can't find Windows OS installation files on drive $DriveLetter (no install.wim or install.esd under \sources). Check the -ISO drive letter."
     }
 }
 
 Write-Host "Copying Windows image..."
-Copy-Item -Path "$DriveLetter\*" -Destination "$mainOSDrive\tiny11" -Recurse -Force > null
+Copy-Item -Path "$DriveLetter\*" -Destination "$mainOSDrive\tiny11" -Recurse -Force > $null
 Set-ItemProperty -Path "$mainOSDrive\tiny11\sources\install.esd" -Name IsReadOnly -Value $false > $null 2>&1
 Remove-Item "$mainOSDrive\tiny11\sources\install.esd" > $null 2>&1
 Write-Host "Copy complete!"
@@ -66,20 +270,31 @@ Start-Sleep -Seconds 2
 Clear-Host
 Write-Host "Getting image information:"
 &  'dism' '/English' "/Get-WimInfo" "/wimfile:$mainOSDrive\tiny11\sources\install.wim"
-$index = Read-Host "Please enter the image index"
+if ($Index) { $imageIndex = $Index } else { $imageIndex = Read-Host "Please enter the image index" }
 Write-Host "Mounting Windows image. This may take a while."
-$wimFilePath = "$($env:SystemDrive)\tiny11\sources\install.wim" 
+$wimFilePath = "$mainOSDrive\tiny11\sources\install.wim" 
 & takeown "/F" $wimFilePath 
 & icacls $wimFilePath "/grant" "$($adminGroup.Value):(F)"
 try {
     Set-ItemProperty -Path $wimFilePath -Name IsReadOnly -Value $false -ErrorAction Stop
 } catch {
-    # This block will catch the error and suppress it.
+    # Clearing the read-only attribute is best-effort; the WIM may already be
+    # writable. Note it verbosely instead of leaving an empty catch.
+    Write-Verbose "Could not clear read-only on $wimFilePath : $_"
 }
+# A previous interrupted/failed run can leave scratchdir populated or holding an
+# orphaned WIM mount; DISM refuses to mount into a non-empty directory. Clean up
+# first: clear orphaned mountpoints, discard a leftover mount at scratchdir if one
+# looks present, then remove and recreate the directory empty. All best-effort.
+& dism.exe /English /Cleanup-Mountpoints 2>&1 | Out-Null
+if (Test-Path "$mainOSDrive\scratchdir\Windows") {
+    & dism.exe /English /Unmount-Image "/MountDir:$mainOSDrive\scratchdir" /Discard 2>&1 | Out-Null
+}
+Remove-Item -Path "$mainOSDrive\scratchdir" -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path "$mainOSDrive\scratchdir" > $null
-& dism /English "/mount-image" "/imagefile:$($env:SystemDrive)\tiny11\sources\install.wim" "/index:$index" "/mountdir:$($env:SystemDrive)\scratchdir"
+Invoke-Dism /English /mount-image "/imagefile:$mainOSDrive\tiny11\sources\install.wim" "/index:$imageIndex" "/mountdir:$mainOSDrive\scratchdir"
 
-$imageIntl = & dism /English /Get-Intl "/Image:$($env:SystemDrive)\scratchdir"
+$imageIntl = & dism /English /Get-Intl "/Image:$mainOSDrive\scratchdir"
 $languageLine = $imageIntl -split '\n' | Where-Object { $_ -match 'Default system UI language : ([a-zA-Z]{2}-[a-zA-Z]{2})' }
 
 if ($languageLine) {
@@ -89,7 +304,7 @@ if ($languageLine) {
     Write-Host "Default system UI language code not found."
 }
 
-$imageInfo = & 'dism' '/English' '/Get-WimInfo' "/wimFile:$($env:SystemDrive)\tiny11\sources\install.wim" "/index:$index"
+$imageInfo = & 'dism' '/English' '/Get-WimInfo' "/wimFile:$mainOSDrive\tiny11\sources\install.wim" "/index:$imageIndex"
 $lines = $imageInfo -split '\r?\n'
 
 foreach ($line in $lines) {
@@ -110,13 +325,91 @@ if (-not $architecture) {
 
 Write-Host "Mounting complete! Performing removal of applications..."
 
-$packages = & 'dism' '/English' "/image:$($env:SystemDrive)\scratchdir" '/Get-ProvisionedAppxPackages' |
+$packages = & 'dism' '/English' "/image:$mainOSDrive\scratchdir" '/Get-ProvisionedAppxPackages' |
     ForEach-Object {
         if ($_ -match 'PackageName : (.*)') {
             $matches[1]
         }
     }
-$packagePrefixes = 'Clipchamp.Clipchamp_', 'Microsoft.BingNews_', 'Microsoft.BingWeather_', 'Microsoft.GamingApp_', 'Microsoft.GetHelp_', 'Microsoft.Getstarted_', 'Microsoft.MicrosoftOfficeHub_', 'Microsoft.MicrosoftSolitaireCollection_', 'Microsoft.People_', 'Microsoft.PowerAutomateDesktop_', 'Microsoft.Todos_', 'Microsoft.WindowsAlarms_', 'microsoft.windowscommunicationsapps_', 'Microsoft.WindowsFeedbackHub_', 'Microsoft.WindowsMaps_', 'Microsoft.WindowsSoundRecorder_', 'Microsoft.Xbox.TCUI_', 'Microsoft.XboxGamingOverlay_', 'Microsoft.XboxGameOverlay_', 'Microsoft.XboxSpeechToTextOverlay_', 'Microsoft.YourPhone_', 'Microsoft.ZuneMusic_', 'Microsoft.ZuneVideo_', 'MicrosoftCorporationII.MicrosoftFamily_', 'MicrosoftCorporationII.QuickAssist_', 'MicrosoftTeams_', 'Microsoft.549981C3F5F10_', 'Microsoft.Windows.Copilot', 'MSTeams_', 'Microsoft.OutlookForWindows_', 'Microsoft.Windows.Teams_', 'Microsoft.Copilot_'
+# Always-remove bloat. The 12 optional standalone utilities (Terminal, Calculator,
+# Notepad, Photos, Paint, Camera, SoundRecorder, StickyNotes, Clock, MediaPlayer,
+# MoviesTV, SnippingTool) are handled separately in the next block via
+# Get-OptionalUtilities / the picker / -Keep / -Remove, so they must NOT appear here.
+$packagePrefixes = @(
+    'Clipchamp.Clipchamp_',
+    'Microsoft.BingNews_',
+    'Microsoft.BingSearch_',
+    'Microsoft.BingWeather_',
+    'Microsoft.GamingApp_',
+    'Microsoft.GetHelp_',
+    'Microsoft.Getstarted_',
+    'Microsoft.MicrosoftOfficeHub_',
+    'Microsoft.MicrosoftSolitaireCollection_',
+    'Microsoft.People_',
+    'Microsoft.PowerAutomateDesktop_',
+    'Microsoft.Todos_',
+    'microsoft.windowscommunicationsapps_',
+    'Microsoft.WindowsFeedbackHub_',
+    'Microsoft.WindowsMaps_',
+    'Microsoft.Xbox.TCUI_',
+    'Microsoft.XboxGamingOverlay_',
+    'Microsoft.XboxGameOverlay_',
+    'Microsoft.XboxSpeechToTextOverlay_',
+    'Microsoft.XboxIdentityProvider_',
+    'Microsoft.YourPhone_',
+    'MicrosoftCorporationII.MicrosoftFamily_',
+    'MicrosoftCorporationII.QuickAssist_',
+    'MicrosoftTeams_',
+    'MSTeams_',
+    'Microsoft.Windows.Teams_',
+    'Microsoft.549981C3F5F10_',
+    'Microsoft.Copilot_',
+    'Microsoft.Windows.Copilot',
+    'Microsoft.Windows.DevHome_',
+    'Microsoft.Windows.CrossDevice_',
+    'Microsoft.OutlookForWindows_',
+    'MicrosoftWindows.Client.WebExperience_'
+)
+if ($Yes) {
+    $picked = Resolve-OptionalUtilities -Keep $Keep -Remove $Remove
+} else {
+    Write-Host ""
+    Write-Host "Optional utilities (default state shown). Toggle any you want to change:"
+    $utils = Get-OptionalUtilities
+    $state = @{}
+    for ($i = 0; $i -lt $utils.Count; $i++) {
+        $u = $utils[$i]
+        $s = $u.Default
+        if ($Keep   -contains $u.Name) { $s = 'Keep' }
+        if ($Remove -contains $u.Name) { $s = 'Remove' }
+        $state[$u.Name] = $s
+        Write-Host ("  {0,2}. [{1,-6}] {2}" -f ($i + 1), $s, $u.Name)
+    }
+    $answer = Read-Host "Enter numbers/names to TOGGLE (comma-separated), or press Enter to accept"
+    if ($answer.Trim()) {
+        foreach ($tokenRaw in ($answer -split ',')) {
+            $token = $tokenRaw.Trim()
+            if (-not $token) { continue }
+            $name = $null
+            if ($token -match '^[0-9]+$' -and [int]$token -ge 1 -and [int]$token -le $utils.Count) {
+                $name = $utils[[int]$token - 1].Name
+            } else {
+                $m = $utils | Where-Object { $_.Name -eq $token }
+                if ($m) { $name = $m.Name }
+            }
+            if ($name) {
+                $state[$name] = if ($state[$name] -eq 'Keep') { 'Remove' } else { 'Keep' }
+            } else {
+                Write-Host "  (ignoring unknown entry '$token')"
+            }
+        }
+    }
+    $keepNames   = @($utils | Where-Object { $state[$_.Name] -eq 'Keep' }   | ForEach-Object { $_.Name })
+    $removeNames = @($utils | Where-Object { $state[$_.Name] -eq 'Remove' } | ForEach-Object { $_.Name })
+    $picked = Resolve-OptionalUtilities -Keep $keepNames -Remove $removeNames
+}
+$packagePrefixes = @($packagePrefixes) + @($picked.RemovePrefixes)
+if ($picked.KeptNames) { Write-Host "Keeping optional utilities: $($picked.KeptNames -join ', ')" }
 
 $packagesToRemove = $packages | Where-Object {
     $packageName = $_
@@ -124,14 +417,15 @@ $packagesToRemove = $packages | Where-Object {
 }
 foreach ($package in $packagesToRemove) {
     write-host "Removing $package :"
-    & 'dism' '/English' "/image:$($env:SystemDrive)\scratchdir" '/Remove-ProvisionedAppxPackage' "/PackageName:$package"
+    & 'dism' '/English' "/image:$mainOSDrive\scratchdir" '/Remove-ProvisionedAppxPackage' "/PackageName:$package"
+    if ($LASTEXITCODE -ne 0) { Write-Host "  warning: could not remove $package (exit $LASTEXITCODE), continuing." }
 }
 
 Write-Host "Removing of system apps complete! Now proceeding to removal of system packages..."
 Start-Sleep -Seconds 1
 Clear-Host
 
-$scratchDir = "$($env:SystemDrive)\scratchdir"
+$scratchDir = "$mainOSDrive\scratchdir"
 $packagePatterns = @(
     "Microsoft-Windows-InternetExplorer-Optional-Package~31bf3856ad364e35",
     "Microsoft-Windows-Kernel-LA57-FoD-Package~31bf3856ad364e35~amd64",
@@ -148,64 +442,55 @@ $packagePatterns = @(
 
 )
 
-# Get all packages
-$allPackages = & dism /image:$scratchDir /Get-Packages /Format:Table
-$allPackages = $allPackages -split "`n" | Select-Object -Skip 1
+# Get all packages. /Format:List prints the full, untruncated "Package Identity"
+# on its own line; /Format:Table can clip long names into invalid identities.
+# /English keeps the label stable regardless of the image's UI language.
+$allPackages = & dism /English /image:$scratchDir /Get-Packages /Format:List |
+    ForEach-Object {
+        if ($_ -match 'Package Identity : (.+)') { $matches[1].Trim() }
+    }
 
 foreach ($packagePattern in $packagePatterns) {
     # Filter the packages to remove
     $packagesToRemove = $allPackages | Where-Object { $_ -like "$packagePattern*" }
 
-    foreach ($package in $packagesToRemove) {
-        # Extract the package identity
-        $packageIdentity = ($package -split "\s+")[0]
-
+    foreach ($packageIdentity in $packagesToRemove) {
         Write-Host "Removing $packageIdentity..."
-        & dism /image:$scratchDir /Remove-Package /PackageName:$packageIdentity 
+        & dism /English /image:$scratchDir /Remove-Package /PackageName:$packageIdentity
+        if ($LASTEXITCODE -ne 0) { Write-Host "  warning: could not remove $packageIdentity (exit $LASTEXITCODE), continuing." }
     }
 }
 
-Write-Host "Do you want to enable .NET 3.5? This cannot be done after the image has been created! (y/n)"
-$input = Read-Host
+if ($EnableNet35) { $net35Choice = 'y' }
+elseif ($Yes)     { $net35Choice = 'n' }
+else {
+    Write-Host "Do you want to enable .NET 3.5? This cannot be done after the image has been created! (y/n)"
+    $net35Choice = Read-Host
+}
 
-if ($input -eq 'y') {
+if ($net35Choice -eq 'y') {
     Write-Host "Enabling .NET 3.5..."
-    & 'dism'  "/image:$scratchDir" '/enable-feature' '/featurename:NetFX3' '/All' "/source:$($env:SystemDrive)\tiny11\sources\sxs" 
+    & 'dism'  "/image:$scratchDir" '/enable-feature' '/featurename:NetFX3' '/All' "/source:$mainOSDrive\tiny11\sources\sxs"
     Write-Host ".NET 3.5 has been enabled."
 }
-elseif ($input -eq 'n') {
+elseif ($net35Choice -eq 'n') {
     Write-Host "You chose not to enable .NET 3.5. Continuing..."
 }
 else {
     Write-Host "Invalid input. Please enter 'y' to enable .NET 3.5 or 'n' to continue without installing .net 3.5."
 }
 Write-Host "Removing Edge:"
-Remove-Item -Path "$mainOSDrive\scratchdir\Program Files (x86)\Microsoft\Edge" -Recurse -Force >null
-Remove-Item -Path "$mainOSDrive\scratchdir\Program Files (x86)\Microsoft\EdgeUpdate" -Recurse -Force >null
-Remove-Item -Path "$mainOSDrive\scratchdir\Program Files (x86)\Microsoft\EdgeCore" -Recurse -Force >null
-if ($architecture -eq 'amd64') {
-    $folderPath = Get-ChildItem -Path "$mainOSDrive\scratchdir\Windows\WinSxS" -Filter "amd64_microsoft-edge-webview_31bf3856ad364e35*" -Directory | Select-Object -ExpandProperty FullName
-
-    if ($folderPath) {
-        & 'takeown' '/f' $folderPath '/r' >null
-        & icacls $folderPath  "/grant" "$($adminGroup.Value):(F)" '/T' '/C' >null
-        Remove-Item -Path $folderPath -Recurse -Force >null
-    } else {
-        Write-Host "Folder not found."
-    }
-} elseif ($architecture -eq 'arm64') {
-    $folderPath = Get-ChildItem -Path "$mainOSDrive\scratchdir\Windows\WinSxS" -Filter "arm64_microsoft-edge-webview_31bf3856ad364e35*" -Directory | Select-Object -ExpandProperty FullName >null
-
-    if ($folderPath) {
-        & 'takeown' '/f' $folderPath '/r'>null
-        & icacls $folderPath  "/grant" "$($adminGroup.Value):(F)" '/T' '/C' >null
-        Remove-Item -Path $folderPath -Recurse -Force >null
-    } else {
-        Write-Host "Folder not found."
-    }
-} else {
-    Write-Host "Unknown architecture: $architecture"
-}
+Remove-Item -Path "$mainOSDrive\scratchdir\Program Files (x86)\Microsoft\Edge" -Recurse -Force > $null
+Remove-Item -Path "$mainOSDrive\scratchdir\Program Files (x86)\Microsoft\EdgeUpdate" -Recurse -Force > $null
+Remove-Item -Path "$mainOSDrive\scratchdir\Program Files (x86)\Microsoft\EdgeCore" -Recurse -Force > $null
+# NOTE: the Edge WebView component under WinSxS is intentionally NOT deleted here.
+# tiny11 Core rebuilds WinSxS from an allowlist further down (copy allowlist to
+# WinSxS_edit -> delete the old WinSxS -> rename), and edge-webview is not in that
+# allowlist, so it is purged wholesale by the rebuild. Deleting it at this point
+# was redundant AND, because takeown/icacls don't reliably reclaim the nested
+# EBWebView files before the WinSxS-wide takeown runs, it produced ~900 "Access
+# denied" errors per run. The System32 copy below is a different path that the
+# rebuild does NOT cover, so that removal stays.
 & 'takeown' '/f' "$mainOSDrive\scratchdir\Windows\System32\Microsoft-Edge-Webview" '/r'
 & 'icacls' "$mainOSDrive\scratchdir\Windows\System32\Microsoft-Edge-Webview" '/grant' "$($adminGroup.Value):(F)" '/T' '/C'
 Remove-Item -Path "$mainOSDrive\scratchdir\Windows\System32\Microsoft-Edge-Webview" -Recurse -Force
@@ -215,9 +500,9 @@ Write-Host "Removing WinRE"
 Remove-Item -Path "$mainOSDrive\scratchdir\Windows\System32\Recovery\winre.wim" -Recurse -Force
 New-Item -Path "$mainOSDrive\scratchdir\Windows\System32\Recovery\winre.wim" -ItemType File -Force
 Write-Host "Removing OneDrive:"
-& 'takeown' '/f' "$mainOSDrive\scratchdir\Windows\System32\OneDriveSetup.exe" >null
-& 'icacls' "$mainOSDrive\scratchdir\Windows\System32\OneDriveSetup.exe" '/grant' "$($adminGroup.Value):(F)" '/T' '/C' >null
-Remove-Item -Path "$mainOSDrive\scratchdir\Windows\System32\OneDriveSetup.exe" -Force >null
+& 'takeown' '/f' "$mainOSDrive\scratchdir\Windows\System32\OneDriveSetup.exe" > $null
+& 'icacls' "$mainOSDrive\scratchdir\Windows\System32\OneDriveSetup.exe" '/grant' "$($adminGroup.Value):(F)" '/T' '/C' > $null
+Remove-Item -Path "$mainOSDrive\scratchdir\Windows\System32\OneDriveSetup.exe" -Force > $null
 Write-Host "Removal complete!"
 Start-Sleep -Seconds 2
 Clear-Host
@@ -267,15 +552,8 @@ if ($architecture -eq "amd64") {
         "x86_microsoft.windows.c..-controls.resources_6595b64144ccf1df_*",
         "x86_microsoft.windows.c..-controls.resources_6595b64144ccf1df_*"
     )
- # Copy each directory
-   foreach ($dir in $dirsToCopy) {
-        $sourceDirs = Get-ChildItem -Path $sourceDirectory -Filter $dir -Directory
-        foreach ($sourceDir in $sourceDirs) {
-            $destDir = Join-Path -Path $destinationDirectory -ChildPath $sourceDir.Name
-            Write-Host "Copying $sourceDir.FullName to $destDir"
-            Copy-Item -Path $sourceDir.FullName -Destination $destDir -Recurse -Force
-        }
-    }
+    # NOTE: the actual copy is performed by the shared loop after this if/elseif,
+    # so amd64 must NOT copy here as well (that doubled the slowest step).
 }
  elseif ($architecture -eq "arm64") {
     # Specify the list of files to copy
@@ -316,7 +594,10 @@ if ($architecture -eq "amd64") {
     )
 }
 foreach ($dir in $dirsToCopy) {
-        $sourceDirs = Get-ChildItem -Path $sourceDirectory -Filter $dir -Directory
+        $sourceDirs = @(Get-ChildItem -Path $sourceDirectory -Filter $dir -Directory)
+        if ($sourceDirs.Count -eq 0) {
+            Write-Warning "WinSxS allowlist pattern matched nothing: $dir"
+        }
         foreach ($sourceDir in $sourceDirs) {
             $destDir = Join-Path -Path $destinationDirectory -ChildPath $sourceDir.Name
             Write-Host "Copying $sourceDir.FullName to $destDir"
@@ -325,6 +606,8 @@ foreach ($dir in $dirsToCopy) {
     }  
 
 
+Write-Host "Validating rebuilt WinSxS before deleting the original..."
+Assert-WinSxSRebuild -Path $destinationDirectory
 Write-Host "Deleting WinSxS. This may take a while..."
         Remove-Item -Path $mainOSDrive\scratchdir\Windows\WinSxS -Recurse -Force
 
@@ -417,7 +700,7 @@ Write-Host "Prevents installation of Teams:"
 & 'reg' 'add' 'HKLM\zSOFTWARE\Policies\Microsoft\Teams' '/v' 'DisableInstallation' '/t' 'REG_DWORD' '/d' '1' '/f' | Out-Null
 Write-Host "Prevent installation of New Outlook":
 & 'reg' 'add' 'HKLM\zSOFTWARE\Policies\Microsoft\Windows\Windows Mail' '/v' 'PreventRun' '/t' 'REG_DWORD' '/d' '1' '/f' | Out-Null
-$tasksPath = "C:\scratchdir\Windows\System32\Tasks"
+$tasksPath = "$mainOSDrive\scratchdir\Windows\System32\Tasks"
 
 Write-Host "Deleting scheduled task definition files..."
 
@@ -465,35 +748,34 @@ $servicePaths = @(
 )
 
 foreach ($path in $servicePaths) {
-    Set-ItemProperty -Path "HKLM:\zSYSTEM\ControlSet001\Services\$path" -Name "Start" -Value 4
+    # Use reg.exe rather than the HKLM:\ PSDrive: a Set-ItemProperty here keeps a
+    # handle open on the zSYSTEM hive, which can make the later 'reg unload zSYSTEM'
+    # fail and leave the hive loaded when the image is committed.
+    & 'reg' 'add' "HKLM\zSYSTEM\ControlSet001\Services\$path" '/v' 'Start' '/t' 'REG_DWORD' '/d' '4' '/f' | Out-Null
 }
 & 'reg' 'add' 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer' '/v' 'SettingsPageVisibility' '/t' 'REG_SZ' '/d' 'hide:virus;windowsupdate' '/f' 
 Write-Host "Tweaking complete!"
 Write-Host "Unmounting Registry..."
-reg unload HKLM\zCOMPONENTS >null
-reg unload HKLM\zDEFAULT >null
-reg unload HKLM\zNTUSER >null
-reg unload HKLM\zSOFTWARE
-reg unload HKLM\zSYSTEM >null
+Remove-OfflineHives
 Write-Host "Cleaning up image..."
-& 'dism' '/English' "/image:$mainOSDrive\scratchdir" '/Cleanup-Image' '/StartComponentCleanup' '/ResetBase' >null
+& 'dism' '/English' "/image:$mainOSDrive\scratchdir" '/Cleanup-Image' '/StartComponentCleanup' '/ResetBase' > $null
 Write-Host "Cleanup complete."
 Write-Host ' '
 Write-Host "Unmounting image..."
-& 'dism' '/English' '/unmount-image' "/mountdir:$mainOSDrive\scratchdir" '/commit'
+Invoke-Dism '/English' '/unmount-image' "/mountdir:$mainOSDrive\scratchdir" '/commit'
 Write-Host "Exporting image..."
-& 'dism' '/English' '/Export-Image' "/SourceImageFile:$mainOSDrive\tiny11\sources\install.wim" "/SourceIndex:$index" "/DestinationImageFile:$mainOSDrive\tiny11\sources\install2.wim" '/compress:max'
-Remove-Item -Path "$mainOSDrive\tiny11\sources\install.wim" -Force >null
-Rename-Item -Path "$mainOSDrive\tiny11\sources\install2.wim" -NewName "install.wim" >null
+Invoke-Dism '/English' '/Export-Image' "/SourceImageFile:$mainOSDrive\tiny11\sources\install.wim" "/SourceIndex:$imageIndex" "/DestinationImageFile:$mainOSDrive\tiny11\sources\install2.wim" '/compress:max'
+Remove-Item -Path "$mainOSDrive\tiny11\sources\install.wim" -Force > $null
+Rename-Item -Path "$mainOSDrive\tiny11\sources\install2.wim" -NewName "install.wim" > $null
 Write-Host "Windows image completed. Continuing with boot.wim."
 Start-Sleep -Seconds 2
 Clear-Host
 Write-Host "Mounting boot image:"
-$wimFilePath = "$($env:SystemDrive)\tiny11\sources\boot.wim" 
-& takeown "/F" $wimFilePath >null
+$wimFilePath = "$mainOSDrive\tiny11\sources\boot.wim" 
+& takeown "/F" $wimFilePath > $null
 & icacls $wimFilePath "/grant" "$($adminGroup.Value):(F)"
 Set-ItemProperty -Path $wimFilePath -Name IsReadOnly -Value $false
-& 'dism' '/English' '/mount-image' "/imagefile:$mainOSDrive\tiny11\sources\boot.wim" '/index:2' "/mountdir:$mainOSDrive\scratchdir"
+Invoke-Dism '/English' '/mount-image' "/imagefile:$mainOSDrive\tiny11\sources\boot.wim" '/index:2' "/mountdir:$mainOSDrive\scratchdir"
 Write-Host "Loading registry..."
 reg load HKLM\zCOMPONENTS $mainOSDrive\scratchdir\Windows\System32\config\COMPONENTS
 reg load HKLM\zDEFAULT $mainOSDrive\scratchdir\Windows\System32\config\default
@@ -501,29 +783,25 @@ reg load HKLM\zNTUSER $mainOSDrive\scratchdir\Users\Default\ntuser.dat
 reg load HKLM\zSOFTWARE $mainOSDrive\scratchdir\Windows\System32\config\SOFTWARE
 reg load HKLM\zSYSTEM $mainOSDrive\scratchdir\Windows\System32\config\SYSTEM
 Write-Host "Bypassing system requirements(on the setup image):"
-& 'reg' 'add' 'HKLM\zDEFAULT\Control Panel\UnsupportedHardwareNotificationCache' '/v' 'SV1' '/t' 'REG_DWORD' '/d' '0' '/f' >null
-& 'reg' 'add' 'HKLM\zDEFAULT\Control Panel\UnsupportedHardwareNotificationCache' '/v' 'SV2' '/t' 'REG_DWORD' '/d' '0' '/f' >null
-& 'reg' 'add' 'HKLM\zNTUSER\Control Panel\UnsupportedHardwareNotificationCache' '/v' 'SV1' '/t' 'REG_DWORD' '/d' '0' '/f' >null
-& 'reg' 'add' 'HKLM\zNTUSER\Control Panel\UnsupportedHardwareNotificationCache' '/v' 'SV2' '/t' 'REG_DWORD' '/d' '0' '/f' >null
-& 'reg' 'add' 'HKLM\zSYSTEM\Setup\LabConfig' '/v' 'BypassCPUCheck' '/t' 'REG_DWORD' '/d' '1' '/f' >null
-& 'reg' 'add' 'HKLM\zSYSTEM\Setup\LabConfig' '/v' 'BypassRAMCheck' '/t' 'REG_DWORD' '/d' '1' '/f' >null
-& 'reg' 'add' 'HKLM\zSYSTEM\Setup\LabConfig' '/v' 'BypassSecureBootCheck' '/t' 'REG_DWORD' '/d' '1' '/f' >null
-& 'reg' 'add' 'HKLM\zSYSTEM\Setup\LabConfig' '/v' 'BypassStorageCheck' '/t' 'REG_DWORD' '/d' '1' '/f' >null
-& 'reg' 'add' 'HKLM\zSYSTEM\Setup\LabConfig' '/v' 'BypassTPMCheck' '/t' 'REG_DWORD' '/d' '1' '/f' >null
-& 'reg' 'add' 'HKLM\zSYSTEM\Setup\MoSetup' '/v' 'AllowUpgradesWithUnsupportedTPMOrCPU' '/t' 'REG_DWORD' '/d' '1' '/f' >null
-& 'reg' 'add' 'HKEY_LOCAL_MACHINE\zSYSTEM\Setup' '/v' 'CmdLine' '/t' 'REG_SZ' '/d' 'X:\sources\setup.exe' '/f' >null
+& 'reg' 'add' 'HKLM\zDEFAULT\Control Panel\UnsupportedHardwareNotificationCache' '/v' 'SV1' '/t' 'REG_DWORD' '/d' '0' '/f' > $null
+& 'reg' 'add' 'HKLM\zDEFAULT\Control Panel\UnsupportedHardwareNotificationCache' '/v' 'SV2' '/t' 'REG_DWORD' '/d' '0' '/f' > $null
+& 'reg' 'add' 'HKLM\zNTUSER\Control Panel\UnsupportedHardwareNotificationCache' '/v' 'SV1' '/t' 'REG_DWORD' '/d' '0' '/f' > $null
+& 'reg' 'add' 'HKLM\zNTUSER\Control Panel\UnsupportedHardwareNotificationCache' '/v' 'SV2' '/t' 'REG_DWORD' '/d' '0' '/f' > $null
+& 'reg' 'add' 'HKLM\zSYSTEM\Setup\LabConfig' '/v' 'BypassCPUCheck' '/t' 'REG_DWORD' '/d' '1' '/f' > $null
+& 'reg' 'add' 'HKLM\zSYSTEM\Setup\LabConfig' '/v' 'BypassRAMCheck' '/t' 'REG_DWORD' '/d' '1' '/f' > $null
+& 'reg' 'add' 'HKLM\zSYSTEM\Setup\LabConfig' '/v' 'BypassSecureBootCheck' '/t' 'REG_DWORD' '/d' '1' '/f' > $null
+& 'reg' 'add' 'HKLM\zSYSTEM\Setup\LabConfig' '/v' 'BypassStorageCheck' '/t' 'REG_DWORD' '/d' '1' '/f' > $null
+& 'reg' 'add' 'HKLM\zSYSTEM\Setup\LabConfig' '/v' 'BypassTPMCheck' '/t' 'REG_DWORD' '/d' '1' '/f' > $null
+& 'reg' 'add' 'HKLM\zSYSTEM\Setup\MoSetup' '/v' 'AllowUpgradesWithUnsupportedTPMOrCPU' '/t' 'REG_DWORD' '/d' '1' '/f' > $null
+& 'reg' 'add' 'HKEY_LOCAL_MACHINE\zSYSTEM\Setup' '/v' 'CmdLine' '/t' 'REG_SZ' '/d' 'X:\sources\setup.exe' '/f' > $null
 Write-Host "Tweaking complete!"
 Write-Host "Unmounting Registry..."
-reg unload HKLM\zCOMPONENTS >null
-reg unload HKLM\zDEFAULT >null
-reg unload HKLM\zNTUSER >null
-reg unload HKLM\zSOFTWARE >null
-reg unload HKLM\zSYSTEM >null
+Remove-OfflineHives
 Write-Host "Unmounting image..."
-& 'dism' '/English' '/unmount-image' "/mountdir:$mainOSDrive\scratchdir" '/commit'
+Invoke-Dism '/English' '/unmount-image' "/mountdir:$mainOSDrive\scratchdir" '/commit'
 Clear-Host
 Write-Host "Exporting ESD. This may take a while..."
-& dism /Export-Image /SourceImageFile:"$mainOSDrive\tiny11\sources\install.wim" /SourceIndex:1 /DestinationImageFile:"$mainOSDrive\tiny11\sources\install.esd" /Compress:recovery
+Invoke-Dism /Export-Image /SourceImageFile:"$mainOSDrive\tiny11\sources\install.wim" /SourceIndex:1 /DestinationImageFile:"$mainOSDrive\tiny11\sources\install.esd" /Compress:recovery
 Remove-Item "$mainOSDrive\tiny11\sources\install.wim" > $null 2>&1
 Write-Host "The tiny11 image is now completed. Proceeding with the making of the ISO..."
 Write-Host "Creating ISO image..."
@@ -562,15 +840,28 @@ if ([System.IO.Directory]::Exists($ADKDepTools)) {
 Write-Host "Creation completed! Press any key to exit the script..."
 Read-Host "Press Enter to continue"
 Write-Host "Performing Cleanup..."
-Remove-Item -Path "$mainOSDrive\tiny11" -Recurse -Force >null
-Remove-Item -Path "$mainOSDrive\scratchdir" -Recurse -Force >null
+Remove-Item -Path "$mainOSDrive\tiny11" -Recurse -Force > $null
+Remove-Item -Path "$mainOSDrive\scratchdir" -Recurse -Force > $null
 
-# Stop the transcript
-Stop-Transcript
-
-exit
 }
-elseif ($input -eq 'n') {
+catch {
+    $script:buildFailed = $true
+    Write-Host ""
+    Write-Host "ERROR: the image build failed and was aborted:"
+    Write-Host "  $($_.Exception.Message)"
+    Write-Host "Review the DISM log at $env:windir\Logs\DISM\dism.log for details."
+}
+finally {
+    # Always release hives and tear down any half-finished mount, then close the
+    # transcript - on both the success and failure paths.
+    Remove-OfflineHives
+    Dismount-OfflineImage -MountDir "$mainOSDrive\scratchdir"
+    Stop-Transcript
+}
+
+if ($script:buildFailed) { exit 1 } else { exit }
+}
+elseif ($continueChoice -eq 'n') {
     Write-Host "You chose not to continue. The script will now exit."
     exit
 }

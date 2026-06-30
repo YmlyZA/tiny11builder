@@ -238,10 +238,10 @@ if ((Test-Path "$DriveLetter\sources\boot.wim") -eq $false -or (Test-Path "$Driv
     if ((Test-Path "$DriveLetter\sources\install.esd") -eq $true) {
         Write-Host "Found install.esd, converting to install.wim..."
         &  'dism' '/English' "/Get-WimInfo" "/wimfile:$DriveLetter\sources\install.esd"
-        if ($Index) { $index = $Index } else { $index = Read-Host "Please enter the image index" }
+        if ($Index) { $imageIndex = $Index } else { $imageIndex = Read-Host "Please enter the image index" }
         Write-Host ' '
         Write-Host 'Converting install.esd to install.wim. This may take a while...'
-        Invoke-Dism /Export-Image /SourceImageFile:"$DriveLetter\sources\install.esd" /SourceIndex:$index /DestinationImageFile:"$mainOSDrive\tiny11\sources\install.wim" /Compress:max /CheckIntegrity
+        Invoke-Dism /Export-Image /SourceImageFile:"$DriveLetter\sources\install.esd" /SourceIndex:$imageIndex /DestinationImageFile:"$mainOSDrive\tiny11\sources\install.wim" /Compress:max /CheckIntegrity
     } else {
         Write-Host "Can't find Windows OS Installation files in the specified Drive Letter.."
         Write-Host "Please enter the correct DVD Drive Letter.."
@@ -258,9 +258,9 @@ Start-Sleep -Seconds 2
 Clear-Host
 Write-Host "Getting image information:"
 &  'dism' '/English' "/Get-WimInfo" "/wimfile:$mainOSDrive\tiny11\sources\install.wim"
-if ($Index) { $index = $Index } else { $index = Read-Host "Please enter the image index" }
+if ($Index) { $imageIndex = $Index } else { $imageIndex = Read-Host "Please enter the image index" }
 Write-Host "Mounting Windows image. This may take a while."
-$wimFilePath = "$($env:SystemDrive)\tiny11\sources\install.wim" 
+$wimFilePath = "$mainOSDrive\tiny11\sources\install.wim" 
 & takeown "/F" $wimFilePath 
 & icacls $wimFilePath "/grant" "$($adminGroup.Value):(F)"
 try {
@@ -271,9 +271,9 @@ try {
     Write-Verbose "Could not clear read-only on $wimFilePath : $_"
 }
 New-Item -ItemType Directory -Force -Path "$mainOSDrive\scratchdir" > $null
-Invoke-Dism /English /mount-image "/imagefile:$($env:SystemDrive)\tiny11\sources\install.wim" "/index:$index" "/mountdir:$($env:SystemDrive)\scratchdir"
+Invoke-Dism /English /mount-image "/imagefile:$mainOSDrive\tiny11\sources\install.wim" "/index:$imageIndex" "/mountdir:$mainOSDrive\scratchdir"
 
-$imageIntl = & dism /English /Get-Intl "/Image:$($env:SystemDrive)\scratchdir"
+$imageIntl = & dism /English /Get-Intl "/Image:$mainOSDrive\scratchdir"
 $languageLine = $imageIntl -split '\n' | Where-Object { $_ -match 'Default system UI language : ([a-zA-Z]{2}-[a-zA-Z]{2})' }
 
 if ($languageLine) {
@@ -283,7 +283,7 @@ if ($languageLine) {
     Write-Host "Default system UI language code not found."
 }
 
-$imageInfo = & 'dism' '/English' '/Get-WimInfo' "/wimFile:$($env:SystemDrive)\tiny11\sources\install.wim" "/index:$index"
+$imageInfo = & 'dism' '/English' '/Get-WimInfo' "/wimFile:$mainOSDrive\tiny11\sources\install.wim" "/index:$imageIndex"
 $lines = $imageInfo -split '\r?\n'
 
 foreach ($line in $lines) {
@@ -304,7 +304,7 @@ if (-not $architecture) {
 
 Write-Host "Mounting complete! Performing removal of applications..."
 
-$packages = & 'dism' '/English' "/image:$($env:SystemDrive)\scratchdir" '/Get-ProvisionedAppxPackages' |
+$packages = & 'dism' '/English' "/image:$mainOSDrive\scratchdir" '/Get-ProvisionedAppxPackages' |
     ForEach-Object {
         if ($_ -match 'PackageName : (.*)') {
             $matches[1]
@@ -396,7 +396,7 @@ $packagesToRemove = $packages | Where-Object {
 }
 foreach ($package in $packagesToRemove) {
     write-host "Removing $package :"
-    & 'dism' '/English' "/image:$($env:SystemDrive)\scratchdir" '/Remove-ProvisionedAppxPackage' "/PackageName:$package"
+    & 'dism' '/English' "/image:$mainOSDrive\scratchdir" '/Remove-ProvisionedAppxPackage' "/PackageName:$package"
     if ($LASTEXITCODE -ne 0) { Write-Host "  warning: could not remove $package (exit $LASTEXITCODE), continuing." }
 }
 
@@ -404,7 +404,7 @@ Write-Host "Removing of system apps complete! Now proceeding to removal of syste
 Start-Sleep -Seconds 1
 Clear-Host
 
-$scratchDir = "$($env:SystemDrive)\scratchdir"
+$scratchDir = "$mainOSDrive\scratchdir"
 $packagePatterns = @(
     "Microsoft-Windows-InternetExplorer-Optional-Package~31bf3856ad364e35",
     "Microsoft-Windows-Kernel-LA57-FoD-Package~31bf3856ad364e35~amd64",
@@ -440,19 +440,19 @@ foreach ($packagePattern in $packagePatterns) {
     }
 }
 
-if ($EnableNet35) { $enableNet35 = 'y' }
-elseif ($Yes)     { $enableNet35 = 'n' }
+if ($EnableNet35) { $net35Choice = 'y' }
+elseif ($Yes)     { $net35Choice = 'n' }
 else {
     Write-Host "Do you want to enable .NET 3.5? This cannot be done after the image has been created! (y/n)"
-    $enableNet35 = Read-Host
+    $net35Choice = Read-Host
 }
 
-if ($enableNet35 -eq 'y') {
+if ($net35Choice -eq 'y') {
     Write-Host "Enabling .NET 3.5..."
-    & 'dism'  "/image:$scratchDir" '/enable-feature' '/featurename:NetFX3' '/All' "/source:$($env:SystemDrive)\tiny11\sources\sxs"
+    & 'dism'  "/image:$scratchDir" '/enable-feature' '/featurename:NetFX3' '/All' "/source:$mainOSDrive\tiny11\sources\sxs"
     Write-Host ".NET 3.5 has been enabled."
 }
-elseif ($enableNet35 -eq 'n') {
+elseif ($net35Choice -eq 'n') {
     Write-Host "You chose not to enable .NET 3.5. Continuing..."
 }
 else {
@@ -743,14 +743,14 @@ Write-Host ' '
 Write-Host "Unmounting image..."
 Invoke-Dism '/English' '/unmount-image' "/mountdir:$mainOSDrive\scratchdir" '/commit'
 Write-Host "Exporting image..."
-Invoke-Dism '/English' '/Export-Image' "/SourceImageFile:$mainOSDrive\tiny11\sources\install.wim" "/SourceIndex:$index" "/DestinationImageFile:$mainOSDrive\tiny11\sources\install2.wim" '/compress:max'
+Invoke-Dism '/English' '/Export-Image' "/SourceImageFile:$mainOSDrive\tiny11\sources\install.wim" "/SourceIndex:$imageIndex" "/DestinationImageFile:$mainOSDrive\tiny11\sources\install2.wim" '/compress:max'
 Remove-Item -Path "$mainOSDrive\tiny11\sources\install.wim" -Force > $null
 Rename-Item -Path "$mainOSDrive\tiny11\sources\install2.wim" -NewName "install.wim" > $null
 Write-Host "Windows image completed. Continuing with boot.wim."
 Start-Sleep -Seconds 2
 Clear-Host
 Write-Host "Mounting boot image:"
-$wimFilePath = "$($env:SystemDrive)\tiny11\sources\boot.wim" 
+$wimFilePath = "$mainOSDrive\tiny11\sources\boot.wim" 
 & takeown "/F" $wimFilePath > $null
 & icacls $wimFilePath "/grant" "$($adminGroup.Value):(F)"
 Set-ItemProperty -Path $wimFilePath -Name IsReadOnly -Value $false

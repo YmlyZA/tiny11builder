@@ -104,7 +104,12 @@ function Dismount-OfflineImage {
     # $MountDir, discard the (incomplete) changes so the host is never left with
     # a stuck mount point.
     param([string]$MountDir)
-    if ($MountDir -and (Test-Path (Join-Path $MountDir 'Windows'))) {
+    if (-not $MountDir) { return }
+    # Test-Path / Join-Path throw DriveNotFoundException when the drive itself is gone;
+    # a finally-block helper must never throw, so swallow that and bail.
+    $mounted = $false
+    try { $mounted = Test-Path (Join-Path $MountDir 'Windows') -ErrorAction Stop } catch { return }
+    if ($mounted) {
         Write-Host "Cleanup: discarding a still-mounted image at $MountDir ..."
         & dism.exe /English /unmount-image "/mountdir:$MountDir" /discard 2>&1 | Out-Null
     }
@@ -203,6 +208,11 @@ Start-Sleep -Seconds 3
 Clear-Host
 
 if ($SCRATCH) { $mainOSDrive = $SCRATCH + ":" } else { $mainOSDrive = $env:SystemDrive }
+# Fail fast with a clear message if the scratch drive does not exist (a bad -SCRATCH
+# otherwise cascades into cryptic DISM 'Error: 3' / DriveNotFound failures).
+if (-not (Test-Path "$mainOSDrive\")) {
+    throw "Scratch drive '$mainOSDrive' was not found. Pass -SCRATCH with an existing drive letter, or omit it to use the system drive ($env:SystemDrive)."
+}
 # Validate optional-utility names early so a bad -Keep/-Remove fails before any work.
 $null = Resolve-OptionalUtilities -Keep $Keep -Remove $Remove
 if ($Yes) {
@@ -227,6 +237,9 @@ if ($ISO) { $DriveLetter = $ISO } else {
     $DriveLetter = Read-Host "Please enter the drive letter for the Windows 11 image"
 }
 $DriveLetter = $DriveLetter + ":"
+if (-not (Test-Path "$DriveLetter\")) {
+    throw "Image drive '$DriveLetter' was not found. Mount the Windows 11 ISO and pass its drive letter via -ISO (or at the prompt)."
+}
 
 # Everything from here on touches a mounted image and/or loaded offline hives.
 # Wrap it so that ANY terminating failure still tears those down (see finally),
@@ -243,9 +256,7 @@ if ((Test-Path "$DriveLetter\sources\boot.wim") -eq $false -or (Test-Path "$Driv
         Write-Host 'Converting install.esd to install.wim. This may take a while...'
         Invoke-Dism /Export-Image /SourceImageFile:"$DriveLetter\sources\install.esd" /SourceIndex:$imageIndex /DestinationImageFile:"$mainOSDrive\tiny11\sources\install.wim" /Compress:max /CheckIntegrity
     } else {
-        Write-Host "Can't find Windows OS Installation files in the specified Drive Letter.."
-        Write-Host "Please enter the correct DVD Drive Letter.."
-        exit
+        throw "Can't find Windows OS installation files on drive $DriveLetter (no install.wim or install.esd under \sources). Check the -ISO drive letter."
     }
 }
 

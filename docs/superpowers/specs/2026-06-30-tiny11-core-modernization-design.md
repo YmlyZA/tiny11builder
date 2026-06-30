@@ -88,8 +88,16 @@ Parameters:
   consistency). Defaults to `$env:SystemDrive` when omitted, preserving current behavior.
 - `-Index <int>` — image index to build.
 - `-EnableNet35` — switch; enables .NET 3.5 without prompting.
+- `-Keep <names>` — comma-separated optional-utility friendly names to RETAIN that default to
+  removed (see Goal 3 table).
+- `-Remove <names>` — comma-separated optional-utility friendly names to DROP that default to
+  kept (see Goal 3 table).
 - `-Yes` — switch; skips the two `y/n` confirmation prompts (continue, and — when `-EnableNet35`
-  is not given — the .NET prompt defaults to "no").
+  is not given — the .NET prompt defaults to "no") and the optional-utility interactive picker
+  (defaults plus any `-Keep`/`-Remove` overrides are used).
+
+`-Keep`/`-Remove` are case-insensitive and validated against the optional-utility table; an
+unknown name throws and lists the valid names; a name present in both throws.
 
 Non-interactive rules:
 - When a prompt's parameter is supplied, use it; otherwise prompt as today.
@@ -113,13 +121,46 @@ several packages maker already removes. Approach:
 3. **De-duplicate** the list (the maker list, for reference, repeats `WindowsTerminal` and
    `Windows.Copilot`).
 
-**Deliberate retention — Windows Terminal.** Core currently keeps `Microsoft.WindowsTerminal`
-(maker removes it). We **keep** it, because the user's primary use case is running scripts and
-testing — removing the terminal from a script-testing image is counterproductive. This is an
-intentional divergence from the maker baseline, documented in the script.
-
 The system-package (`/Remove-Package`) list and the language-feature removals are unchanged this
 round.
+
+#### Optional utilities (user-selectable, single source of truth)
+
+A curated set of standalone utility apps is split out of the fixed removal logic so users can
+tailor the image to their scenario. One table is the single source of truth; the removal logic,
+`-Keep`/`-Remove` validation, the interactive picker, and the docs all derive from it.
+
+| Friendly name | Appx prefix(es) | Default |
+| --- | --- | --- |
+| `Terminal` | `Microsoft.WindowsTerminal` | Keep |
+| `Calculator` | `Microsoft.WindowsCalculator` | Keep |
+| `Notepad` | `Microsoft.WindowsNotepad` | Keep |
+| `Photos` | `Microsoft.Windows.Photos` | Keep |
+| `Paint` | `Microsoft.Paint`, `Microsoft.MSPaint` | Remove |
+| `Camera` | `Microsoft.WindowsCamera` | Remove |
+| `SoundRecorder` | `Microsoft.WindowsSoundRecorder` | Remove |
+| `StickyNotes` | `Microsoft.MicrosoftStickyNotes` | Remove |
+| `Clock` | `Microsoft.WindowsAlarms` | Remove |
+| `MediaPlayer` | `Microsoft.ZuneMusic` | Remove |
+| `MoviesTV` | `Microsoft.ZuneVideo` | Remove |
+| `SnippingTool` | `Microsoft.ScreenSketch` | Remove |
+
+Resolution order for each optional component:
+1. Start from its table `Default`.
+2. Apply `-Remove <names>` (force remove) and `-Keep <names>` (force keep) overrides.
+3. In interactive mode (no `-Yes`), show the resolved keep/remove state for every row and let the
+   user toggle before applying.
+
+Effects on the fixed lists:
+- The four default-Keep utilities (`Terminal`, `Calculator`, `Notepad`, `Photos`) must NOT appear
+  in the always-remove provisioned-Appx list; they are removed only when the user opts in via
+  `-Remove`/the picker. (`Terminal`/`Calculator`/`Notepad`/`Photos` are currently kept by Core
+  anyway, so default behavior is unchanged for them.)
+- The default-Remove utilities are removed by default (consistent with the maker-aligned base) but
+  become retainable via `-Keep`/the picker.
+
+The remaining always-remove bloat (Bing*, Xbox*, Solitaire, Family, QuickAssist, Copilot, new
+Outlook, Maps, Clipchamp, To Do, Power Automate, etc.) is never prompted.
 
 ### Goal 4 — document by-design limitations
 
@@ -139,9 +180,13 @@ round.
 - **Real build (Windows):** the user's existing Layer 2/3 flow. This round must include **one
   amd64 build** (the user's blind spot) to confirm the integrity gate does not false-positive on
   the amd64 allowlist and that the produced ISO boots.
-- **Unattended smoke:** run with full `-ISO/-SCRATCH/-Index/-EnableNet35/-Yes` and confirm no
-  `Read-Host` is hit; run with a missing required parameter under `-Yes` and confirm a clean
-  fail-fast error.
+- **Optional-utility resolution unit test (macOS-friendly):** assert the keep/remove resolution
+  from `(defaults, -Keep, -Remove)` — defaults applied, `-Keep` retains a default-remove item,
+  `-Remove` drops a default-keep item, an unknown name throws, and a name in both `-Keep` and
+  `-Remove` throws. Pure function over the table; no image needed.
+- **Unattended smoke:** run with full `-ISO/-SCRATCH/-Index/-EnableNet35/-Keep/-Remove/-Yes` and
+  confirm no `Read-Host` is hit; run with a missing required parameter under `-Yes` and confirm a
+  clean fail-fast error.
 
 ## Sequencing
 

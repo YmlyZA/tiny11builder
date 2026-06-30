@@ -573,7 +573,10 @@ if ($architecture -eq "amd64") {
     )
 }
 foreach ($dir in $dirsToCopy) {
-        $sourceDirs = Get-ChildItem -Path $sourceDirectory -Filter $dir -Directory
+        $sourceDirs = @(Get-ChildItem -Path $sourceDirectory -Filter $dir -Directory)
+        if ($sourceDirs.Count -eq 0) {
+            Write-Warning "WinSxS allowlist pattern matched nothing: $dir"
+        }
         foreach ($sourceDir in $sourceDirs) {
             $destDir = Join-Path -Path $destinationDirectory -ChildPath $sourceDir.Name
             Write-Host "Copying $sourceDir.FullName to $destDir"
@@ -582,6 +585,8 @@ foreach ($dir in $dirsToCopy) {
     }  
 
 
+Write-Host "Validating rebuilt WinSxS before deleting the original..."
+Assert-WinSxSRebuild -Path $destinationDirectory
 Write-Host "Deleting WinSxS. This may take a while..."
         Remove-Item -Path $mainOSDrive\scratchdir\Windows\WinSxS -Recurse -Force
 

@@ -35,7 +35,11 @@ param (
     [switch]$Yes,
     [switch]$DryRun,
     [ValidateSet('recovery', 'fast', 'none')][string]$Compress,
-    [switch]$Fast
+    [switch]$Fast,
+    [string]$User = 'User',
+    [string]$Password = '',
+    [string]$TimeZone = 'UTC',
+    [switch]$ZeroTouch
 )
 
 if (-not $SCRATCH) {
@@ -197,6 +201,114 @@ function Test-IsoResult {
     return ($ExitCode -eq 0 -and $IsoExists -and $IsoBytes -gt 0)
 }
 
+function New-UnattendXml {
+    # Pure: builds the complete Windows Setup answer file (windowsPE + oobeSystem).
+    # Tier A (default) skips OOBE to an auto-logged-in local admin; -ZeroTouch adds
+    # a disk-0 wipe (clean UEFI layout) for a zero-click install. Arch-aware.
+    # Password is intentionally plain-text: Windows Setup autounattend.xml requires it.
+    param(
+        [ValidateSet('amd64', 'arm64')][string]$Architecture,
+        [string]$UserName,
+        [string]$Password,
+        [string]$TimeZone,
+        [string]$Language = 'en-US',
+        [switch]$ZeroTouch
+    )
+    $escUser = [System.Security.SecurityElement]::Escape($UserName)
+    $escPass = [System.Security.SecurityElement]::Escape($Password)
+    $escTz   = [System.Security.SecurityElement]::Escape($TimeZone)
+    $ns      = 'xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+    $common  = "publicKeyToken=`"31bf3856ad364e35`" language=`"neutral`" versionScope=`"nonSxS`" $ns"
+    if ($ZeroTouch) {
+        $diskConfig = @"
+
+            <DiskConfiguration>
+                <Disk wcm:action="add">
+                    <DiskID>0</DiskID>
+                    <WillWipeDisk>true</WillWipeDisk>
+                    <CreatePartitions>
+                        <CreatePartition wcm:action="add"><Order>1</Order><Type>EFI</Type><Size>260</Size></CreatePartition>
+                        <CreatePartition wcm:action="add"><Order>2</Order><Type>MSR</Type><Size>16</Size></CreatePartition>
+                        <CreatePartition wcm:action="add"><Order>3</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition>
+                    </CreatePartitions>
+                    <ModifyPartitions>
+                        <ModifyPartition wcm:action="add"><Order>1</Order><PartitionID>1</PartitionID><Label>System</Label><Format>FAT32</Format></ModifyPartition>
+                        <ModifyPartition wcm:action="add"><Order>2</Order><PartitionID>2</PartitionID></ModifyPartition>
+                        <ModifyPartition wcm:action="add"><Order>3</Order><PartitionID>3</PartitionID><Label>Windows</Label><Format>NTFS</Format><Letter>C</Letter></ModifyPartition>
+                    </ModifyPartitions>
+                </Disk>
+                <WillShowUI>OnError</WillShowUI>
+            </DiskConfiguration>
+"@
+        $installTo = '<InstallTo><DiskID>0</DiskID><PartitionID>3</PartitionID></InstallTo>'
+    } else {
+        $diskConfig = ''
+        $installTo  = ''
+    }
+    return @"
+<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+    <settings pass="windowsPE">
+        <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="$Architecture" $common>
+            <SetupUILanguage><UILanguage>$Language</UILanguage></SetupUILanguage>
+            <InputLocale>$Language</InputLocale>
+            <SystemLocale>$Language</SystemLocale>
+            <UILanguage>$Language</UILanguage>
+            <UserLocale>$Language</UserLocale>
+        </component>
+        <component name="Microsoft-Windows-Setup" processorArchitecture="$Architecture" $common>
+            <UserData>
+                <ProductKey><Key></Key></ProductKey>
+                <AcceptEula>true</AcceptEula>
+            </UserData>
+            <ImageInstall>
+                <OSImage>
+                    <InstallFrom><MetaData wcm:action="add"><Key>/IMAGE/INDEX</Key><Value>1</Value></MetaData></InstallFrom>
+                    $installTo
+                    <WillShowUI>OnError</WillShowUI>
+                </OSImage>
+            </ImageInstall>$diskConfig
+        </component>
+    </settings>
+    <settings pass="oobeSystem">
+        <component name="Microsoft-Windows-International-Core" processorArchitecture="$Architecture" $common>
+            <InputLocale>$Language</InputLocale>
+            <SystemLocale>$Language</SystemLocale>
+            <UILanguage>$Language</UILanguage>
+            <UserLocale>$Language</UserLocale>
+        </component>
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="$Architecture" $common>
+            <OOBE>
+                <HideEULAPage>true</HideEULAPage>
+                <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+                <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+                <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+                <NetworkLocation>Home</NetworkLocation>
+                <ProtectYourPC>3</ProtectYourPC>
+            </OOBE>
+            <UserAccounts>
+                <LocalAccounts>
+                    <LocalAccount wcm:action="add">
+                        <Name>$escUser</Name>
+                        <Group>Administrators</Group>
+                        <Password><Value>$escPass</Value><PlainText>true</PlainText></Password>
+                    </LocalAccount>
+                </LocalAccounts>
+            </UserAccounts>
+            <AutoLogon>
+                <Username>$escUser</Username>
+                <Enabled>true</Enabled>
+                <LogonCount>999999999</LogonCount>
+                <Password><Value>$escPass</Value><PlainText>true</PlainText></Password>
+            </AutoLogon>
+            <TimeZone>$escTz</TimeZone>
+            <UserData><ProductKey><Key></Key></ProductKey></UserData>
+        </component>
+    </settings>
+</unattend>
+"@
+}
+
 #---------[ Execution ]---------#
 # Check if PowerShell execution is restricted
 if ((Get-ExecutionPolicy) -eq 'Restricted') {
@@ -230,6 +342,10 @@ if (! $myWindowsPrincipal.IsInRole($adminRole))
     if ($DryRun)   { $argList += " -DryRun" }
     if ($Compress) { $argList += " -Compress $Compress" }
     if ($Fast)     { $argList += " -Fast" }
+    $argList += " -User `"$User`""
+    if ($Password) { $argList += " -Password `"$Password`"" }
+    $argList += " -TimeZone `"$TimeZone`""
+    if ($ZeroTouch) { $argList += " -ZeroTouch" }
     $newProcess.Arguments = $argList;
     $newProcess.Verb = "runas";
     [System.Diagnostics.Process]::Start($newProcess);
@@ -239,18 +355,13 @@ if (! $myWindowsPrincipal.IsInRole($adminRole))
 # Resolve the compression/cleanup profile now that the helper functions are defined
 # (Functions block above) and the parameters are bound.
 $buildProfile = Resolve-BuildProfile -Compress $Compress -Fast:$Fast
+if ($ZeroTouch) { Write-Warning "-ZeroTouch: the produced image will ERASE DISK 0 automatically during Windows Setup. Use only on VMs / dedicated test machines." }
 Write-Verbose "Build profile: Compress=$($buildProfile.Compress) SkipCleanup=$($buildProfile.SkipCleanup) UseEsd=$($buildProfile.UseEsd)"
 
 # Unattended runs cannot prompt: -Yes requires the drive letter and image index up front.
 if ($Yes) {
     if (-not $ISO)   { throw "-Yes requires -ISO (no interactive prompt available)." }
     if (-not $Index) { throw "-Yes requires -Index (no interactive prompt available)." }
-}
-
-if (-not $DryRun) {
-    if (-not (Test-Path -Path "$PSScriptRoot/autounattend.xml")) {
-        Invoke-RestMethod "https://raw.githubusercontent.com/ntdevlabs/tiny11builder/refs/heads/main/autounattend.xml" -OutFile "$PSScriptRoot/autounattend.xml"
-    }
 }
 
 # Close any transcript leaked by a prior aborted run in this same session,
@@ -326,6 +437,9 @@ if ($DryRun) {
     Write-Output "  Image drive (-ISO)    : $DriveLetter"
     Write-Output "  Scratch (-SCRATCH)    : $ScratchDisk"
     Write-Output ("  Image index (-Index)  : {0}" -f $(if ($Index) { $Index } else { '(prompt at build time)' }))
+    Write-Output "  Unattended user       : $User (autologon)"
+    Write-Output "  Time zone             : $TimeZone"
+    Write-Output "  Install mode          : $(if ($ZeroTouch) { 'ZeroTouch (ERASES disk 0)' } else { 'OOBE-skip (keeps disk selection)' })"
     if ($Index -and -not $indexOk) {
         Write-Output "     ERROR: index $Index not found. $indexMsg"
     } elseif ($availableIndexes.Count) {
@@ -579,7 +693,10 @@ Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows\CloudContent' 'Disa
 Set-RegistryValue 'HKLM\zSOFTWARE\Policies\Microsoft\Windows\CloudContent' 'DisableCloudOptimizedContent' 'REG_DWORD' '1'
 Write-Output "Enabling Local Accounts on OOBE:"
 Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\OOBE' 'BypassNRO' 'REG_DWORD' '1'
-Copy-Item -Path "$PSScriptRoot\autounattend.xml" -Destination "$ScratchDisk\scratchdir\Windows\System32\Sysprep\autounattend.xml" -Force | Out-Null
+$langForUnattend = if ($languageCode) { $languageCode } else { 'en-US' }
+$unattendXml = New-UnattendXml -Architecture $architecture -UserName $User -Password $Password -TimeZone $TimeZone -Language $langForUnattend -ZeroTouch:$ZeroTouch
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText("$ScratchDisk\scratchdir\Windows\System32\Sysprep\autounattend.xml", $unattendXml, $utf8NoBom)
 
 Write-Output "Disabling Reserved Storage:"
 Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\ReserveManager' 'ShippedWithReserves' 'REG_DWORD' '0'
@@ -699,7 +816,7 @@ Dismount-WindowsImage -Path $ScratchDisk\scratchdir -Save
 Clear-Host
 Write-Output "The tiny11 image is now completed. Proceeding with the making of the ISO..."
 Write-Output "Copying unattended file for bypassing MS account on OOBE..."
-Copy-Item -Path "$PSScriptRoot\autounattend.xml" -Destination "$ScratchDisk\tiny11\autounattend.xml" -Force | Out-Null
+[System.IO.File]::WriteAllText("$ScratchDisk\tiny11\autounattend.xml", $unattendXml, $utf8NoBom)
 Write-Output "Creating ISO image..."
 $ADKDepTools = "C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\$hostarchitecture\Oscdimg"
 $localOSCDIMGPath = "$PSScriptRoot\oscdimg.exe"
@@ -753,9 +870,6 @@ Get-Volume -DriveLetter $DriveLetter[0] | Get-DiskImage | Dismount-DiskImage
 Write-Output "Iso drive ejected"
 Write-Output "Removing oscdimg.exe..."
 Remove-Item -Path "$PSScriptRoot\oscdimg.exe" -Force -ErrorAction SilentlyContinue
-Write-Output "Removing autounattend.xml..."
-Remove-Item -Path "$PSScriptRoot\autounattend.xml" -Force -ErrorAction SilentlyContinue
-
 Write-Output "Cleanup check :"
 if (Test-Path -Path "$ScratchDisk\tiny11") {
     Write-Output "tiny11 folder still exists. Attempting to remove it again..."
@@ -789,17 +903,6 @@ if (Test-Path -Path "$PSScriptRoot\oscdimg.exe") {
     }
 } else {
     Write-Output "oscdimg.exe does not exist. No action needed."
-}
-if (Test-Path -Path "$PSScriptRoot\autounattend.xml") {
-    Write-Output "autounattend.xml still exists. Attempting to remove it again..."
-    Remove-Item -Path "$PSScriptRoot\autounattend.xml" -Force -ErrorAction SilentlyContinue
-    if (Test-Path -Path "$PSScriptRoot\autounattend.xml") {
-        Write-Output "Failed to remove autounattend.xml."
-    } else {
-        Write-Output "autounattend.xml removed successfully."
-    }
-} else {
-    Write-Output "autounattend.xml does not exist. No action needed."
 }
 
 # Stop the transcript

@@ -214,7 +214,7 @@ $makerPath = Join-Path $repo 'tiny11maker.ps1'
 $mtk = $null; $mer = $null
 $mast = [System.Management.Automation.Language.Parser]::ParseFile($makerPath, [ref]$mtk, [ref]$mer)
 $mast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
-    Where-Object { $_.Name -in 'Resolve-BuildProfile', 'Test-RobocopySucceeded', 'Get-AvailableImageIndex', 'Test-ImageIndexAvailable', 'Get-RequiredScratchBytes', 'Test-SufficientScratch', 'Resolve-OscdimgSource', 'Format-BuildSummary', 'Test-IsoResult' } |
+    Where-Object { $_.Name -in 'Resolve-BuildProfile', 'Test-RobocopySucceeded', 'Get-AvailableImageIndex', 'Test-ImageIndexAvailable', 'Get-RequiredScratchBytes', 'Test-SufficientScratch', 'Resolve-OscdimgSource', 'Format-BuildSummary', 'Test-IsoResult', 'New-UnattendXml' } |
     ForEach-Object { Invoke-Expression ($_.Extent.Text -replace 'function\s+(\S+)', 'function maker_$1') }
 $mp = maker_Resolve-BuildProfile -Fast
 Check 'maker -Fast compress fast' ($mp.Compress -eq 'fast')
@@ -234,6 +234,12 @@ Check 'maker summary size 1GB' ($mSummary -contains '  Output ISO    : C:\a.iso 
 Check 'maker summary apps 5/5' ($mSummary -contains '  Apps removed  : 5 of 5 provisioned Appx')
 Check 'maker iso ok'       (maker_Test-IsoResult -ExitCode 0 -IsoExists $true -IsoBytes 100)
 Check 'maker iso bad exit' (-not (maker_Test-IsoResult -ExitCode 1 -IsoExists $true -IsoBytes 100))
+
+$mUaA = maker_New-UnattendXml -Architecture 'arm64' -UserName 'User' -Password '' -TimeZone 'UTC' -Language 'en-US'
+Check 'maker tierA arch arm64' ($mUaA -match 'processorArchitecture="arm64"')
+Check 'maker tierA no wipe'     (-not ($mUaA -match 'WillWipeDisk'))
+$mUaB = maker_New-UnattendXml -Architecture 'amd64' -UserName 'User' -Password '' -TimeZone 'UTC' -Language 'en-US' -ZeroTouch
+Check 'maker tierB disk wipe'   ($mUaB -match '<WillWipeDisk>true</WillWipeDisk>')
 
 Write-Host ""
 Write-Host "RESULT: $script:pass passed, $script:fail failed"

@@ -153,6 +153,12 @@ if (! $myWindowsPrincipal.IsInRole($adminRole))
 $buildProfile = Resolve-BuildProfile -Compress $Compress -Fast:$Fast
 Write-Verbose "Build profile: Compress=$($buildProfile.Compress) SkipCleanup=$($buildProfile.SkipCleanup) UseEsd=$($buildProfile.UseEsd)"
 
+# Unattended runs cannot prompt: -Yes requires the drive letter and image index up front.
+if ($Yes) {
+    if (-not $ISO)   { throw "-Yes requires -ISO (no interactive prompt available)." }
+    if (-not $Index) { throw "-Yes requires -Index (no interactive prompt available)." }
+}
+
 if (-not (Test-Path -Path "$PSScriptRoot/autounattend.xml")) {
     Invoke-RestMethod "https://raw.githubusercontent.com/ntdevlabs/tiny11builder/refs/heads/main/autounattend.xml" -OutFile "$PSScriptRoot/autounattend.xml"
 }

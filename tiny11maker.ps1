@@ -166,6 +166,31 @@ function Resolve-OscdimgSource {
     return 'download'
 }
 
+function Format-BuildSummary {
+    # Pure: renders the end-of-build summary block from primitives. Caller writes
+    # each returned line (Write-Host in Core, Write-Output in maker).
+    param(
+        [timespan]$Elapsed,
+        [long]$IsoBytes,
+        [string]$IsoPath,
+        [int]$AppsRemoved,
+        [int]$AppsTotal,
+        [int]$Warnings
+    )
+    $elapsedText = "{0}m {1}s" -f [int][math]::Floor($Elapsed.TotalMinutes), $Elapsed.Seconds
+    $sizeText    = "{0:N2} GB" -f ($IsoBytes / 1GB)
+    $warnText    = if ($Warnings -eq 0) { 'none' } else { "$Warnings non-fatal (see log)" }
+    return @(
+        "===== BUILD SUMMARY =====",
+        "  Result        : SUCCESS",
+        "  Elapsed       : $elapsedText",
+        "  Output ISO    : $IsoPath  ($sizeText)",
+        "  Apps removed  : $AppsRemoved of $AppsTotal provisioned Appx",
+        "  Warnings      : $warnText",
+        "========================="
+    )
+}
+
 #---------[ Execution ]---------#
 # Check if PowerShell execution is restricted
 if ((Get-ExecutionPolicy) -eq 'Restricted') {
@@ -224,6 +249,8 @@ if (-not $DryRun) {
 
 # Start the transcript and prepare the window
 Start-Transcript -Path "$PSScriptRoot\tiny11_$(get-date -f yyyyMMdd_HHmms).log"
+$buildStart = Get-Date
+$script:buildWarnings = 0
 
 $Host.UI.RawUI.WindowTitle = "Tiny11 image creator"
 Clear-Host
@@ -319,6 +346,7 @@ if (-not $spaceOk) {
 }
 if (-not $oscdimgOk) {
     Write-Warning "Neither the Windows ADK nor a bundled oscdimg.exe was found; the ISO step will attempt to download oscdimg.exe at the end of the build."
+    $script:buildWarnings++
 }
 
 # Resolve the image index once (validated against the source image), used by both
@@ -470,8 +498,16 @@ $packagesToRemove = $packages | Where-Object {
     $packageName = $_
     $packagePrefixes -contains ($packagePrefixes | Where-Object { $packageName -like "*$_*" })
 }
+$appsTotal   = @($packagesToRemove).Count
+$appsRemoved = 0
 foreach ($package in $packagesToRemove) {
     & 'dism' '/English' "/image:$($ScratchDisk)\scratchdir" '/Remove-ProvisionedAppxPackage' "/PackageName:$package"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Output "  warning: could not remove $package (exit $LASTEXITCODE), continuing."
+        $script:buildWarnings++
+    } else {
+        $appsRemoved++
+    }
 }
 
 Write-Output "Removing Edge:"
@@ -682,6 +718,11 @@ if ([System.IO.Directory]::Exists($ADKDepTools)) {
 
 & "$OSCDIMG" '-m' '-o' '-u2' '-udfver102' "-bootdata:2#p0,e,b$ScratchDisk\tiny11\boot\etfsboot.com#pEF,e,b$ScratchDisk\tiny11\efi\microsoft\boot\efisys.bin" "$ScratchDisk\tiny11" "$PSScriptRoot\tiny11.iso"
 
+$elapsed  = (Get-Date) - $buildStart
+$isoPath  = "$PSScriptRoot\tiny11.iso"
+$isoBytes = if (Test-Path $isoPath) { (Get-Item $isoPath).Length } else { 0 }
+Format-BuildSummary -Elapsed $elapsed -IsoBytes $isoBytes -IsoPath $isoPath -AppsRemoved $appsRemoved -AppsTotal $appsTotal -Warnings $script:buildWarnings |
+    ForEach-Object { Write-Output $_ }
 # Finishing up
 Write-Output "Creation completed!"
 if (-not $Yes) { Read-Host "Press Enter to continue" }

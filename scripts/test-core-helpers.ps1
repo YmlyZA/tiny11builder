@@ -128,6 +128,18 @@ Check 'base excludes Calculator'     (-not ($base -match 'WindowsCalculator'))
 Check 'base excludes Notepad'        (-not ($base -match 'WindowsNotepad'))
 Check 'base excludes Photos'         (-not ($base -match 'Windows\.Photos'))
 
+Write-Host '== maker parity: Resolve-BuildProfile =='
+$makerPath = Join-Path $repo 'tiny11maker.ps1'
+$mtk = $null; $mer = $null
+$mast = [System.Management.Automation.Language.Parser]::ParseFile($makerPath, [ref]$mtk, [ref]$mer)
+$mast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+    Where-Object { $_.Name -in 'Resolve-BuildProfile', 'Test-RobocopySucceeded' } |
+    ForEach-Object { Invoke-Expression ($_.Extent.Text -replace 'function\s+(\S+)', 'function maker_$1') }
+$mp = maker_Resolve-BuildProfile -Fast
+Check 'maker -Fast compress fast' ($mp.Compress -eq 'fast')
+Check 'maker -Fast skips cleanup' ($mp.SkipCleanup -eq $true)
+Check 'maker rc 8 failure' (-not (maker_Test-RobocopySucceeded 8))
+
 Write-Host ""
 Write-Host "RESULT: $script:pass passed, $script:fail failed"
 if ($script:fail) { exit 1 }

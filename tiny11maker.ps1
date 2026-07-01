@@ -30,7 +30,12 @@
 #---------[ Parameters ]---------#
 param (
     [ValidatePattern('^[c-zC-Z]$')][string]$ISO,
-    [ValidatePattern('^[c-zC-Z]$')][string]$SCRATCH
+    [ValidatePattern('^[c-zC-Z]$')][string]$SCRATCH,
+    [int]$Index,
+    [switch]$Yes,
+    [switch]$DryRun,
+    [ValidateSet('recovery', 'fast', 'none')][string]$Compress,
+    [switch]$Fast
 )
 
 if (-not $SCRATCH) {
@@ -41,6 +46,8 @@ if (-not $SCRATCH) {
 if (-not (Test-Path "$ScratchDisk\")) {
     throw "Scratch location '$ScratchDisk' was not found. Pass -SCRATCH with an existing drive letter, or omit it to use the script folder."
 }
+$buildProfile = Resolve-BuildProfile -Compress $Compress -Fast:$Fast
+Write-Verbose "Build profile: Compress=$($buildProfile.Compress) SkipCleanup=$($buildProfile.SkipCleanup) UseEsd=$($buildProfile.UseEsd)"
 
 #---------[ Functions ]---------#
 function Set-RegistryValue {
@@ -70,6 +77,40 @@ function Remove-RegistryValue {
 	}
 }
 
+function Resolve-BuildProfile {
+    # Resolve effective image-compression settings from -Compress and -Fast.
+    # Default 'recovery' (current behavior). -Fast implies 'fast' unless -Compress is
+    # explicit. SkipCleanup is set by -Fast. (maker exports a single WIM, so the
+    # export uses Compress directly; UseEsd/WimExportCompress are provided for parity.)
+    param([string]$Compress, [switch]$Fast)
+    $valid = 'recovery', 'fast', 'none'
+    if ($Compress -and ($valid -notcontains $Compress)) {
+        throw "Invalid -Compress '$Compress'. Valid values: $($valid -join ', ')"
+    }
+    $effective = if ($Compress) { $Compress } elseif ($Fast) { 'fast' } else { 'recovery' }
+    [pscustomobject]@{
+        Compress          = $effective
+        SkipCleanup       = [bool]$Fast
+        UseEsd            = ($effective -eq 'recovery')
+        WimExportCompress = if ($effective -eq 'recovery') { 'max' } else { $effective }
+    }
+}
+
+function Test-RobocopySucceeded {
+    param([int]$ExitCode)
+    return ($ExitCode -lt 8)
+}
+
+function Invoke-Robocopy {
+    param([Parameter(Mandatory = $true)][string]$Source,
+          [Parameter(Mandatory = $true)][string]$Destination)
+    & robocopy.exe $Source $Destination '/E' '/MT' '/R:3' '/W:3' '/NFL' '/NDL' '/NJH' '/NJS' '/NP' | Out-Null
+    if (-not (Test-RobocopySucceeded $LASTEXITCODE)) {
+        throw "robocopy failed (exit code $LASTEXITCODE) copying '$Source' -> '$Destination'."
+    }
+    $global:LASTEXITCODE = 0
+}
+
 #---------[ Execution ]---------#
 # Check if PowerShell execution is restricted
 if ((Get-ExecutionPolicy) -eq 'Restricted') {
@@ -96,8 +137,13 @@ if (! $myWindowsPrincipal.IsInRole($adminRole))
     # Use -File so paths with spaces survive, and forward the parameters the
     # user supplied so the elevated instance doesn't fall back to prompting.
     $argList = "-File `"$($myInvocation.MyCommand.Definition)`""
-    if ($ISO)     { $argList += " -ISO $ISO" }
-    if ($SCRATCH) { $argList += " -SCRATCH $SCRATCH" }
+    if ($ISO)      { $argList += " -ISO $ISO" }
+    if ($SCRATCH)  { $argList += " -SCRATCH $SCRATCH" }
+    if ($Index)    { $argList += " -Index $Index" }
+    if ($Yes)      { $argList += " -Yes" }
+    if ($DryRun)   { $argList += " -DryRun" }
+    if ($Compress) { $argList += " -Compress $Compress" }
+    if ($Fast)     { $argList += " -Fast" }
     $newProcess.Arguments = $argList;
     $newProcess.Verb = "runas";
     [System.Diagnostics.Process]::Start($newProcess);

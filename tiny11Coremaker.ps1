@@ -338,7 +338,34 @@ function Resolve-OscdimgSource {
     return 'download'
 }
 
+function Format-BuildSummary {
+    # Pure: renders the end-of-build summary block from primitives. Caller writes
+    # each returned line (Write-Host in Core, Write-Output in maker).
+    param(
+        [timespan]$Elapsed,
+        [long]$IsoBytes,
+        [string]$IsoPath,
+        [int]$AppsRemoved,
+        [int]$AppsTotal,
+        [int]$Warnings
+    )
+    $elapsedText = "{0}m {1}s" -f [int][math]::Floor($Elapsed.TotalMinutes), $Elapsed.Seconds
+    $sizeText    = "{0:N2} GB" -f ($IsoBytes / 1GB)
+    $warnText    = if ($Warnings -eq 0) { 'none' } else { "$Warnings non-fatal (see log)" }
+    return @(
+        "===== BUILD SUMMARY =====",
+        "  Result        : SUCCESS",
+        "  Elapsed       : $elapsedText",
+        "  Output ISO    : $IsoPath  ($sizeText)",
+        "  Apps removed  : $AppsRemoved of $AppsTotal provisioned Appx",
+        "  Warnings      : $warnText",
+        "========================="
+    )
+}
+
 Start-Transcript -Path "$PSScriptRoot\tiny11.log"
+$buildStart = Get-Date
+$script:buildWarnings = 0
 # Ask the user for input
 Write-Host "Welcome to tiny11 core builder! BETA 09-05-25"
 Write-Host "This script generates a significantly reduced Windows 11 image. However, it's not suitable for regular use due to its lack of serviceability - you can't add languages, updates, or features post-creation. tiny11 Core is not a full Windows 11 substitute but a rapid testing or development tool, potentially useful for VM environments."
@@ -468,6 +495,7 @@ if (-not $spaceOk) {
 }
 if (-not $oscdimgOk) {
     Write-Warning "Neither the Windows ADK nor a bundled oscdimg.exe was found; the ISO step will attempt to download oscdimg.exe at the end of the build."
+    $script:buildWarnings++
 }
 
 # Resolve the image index once (validated against the source image), used by both
@@ -614,10 +642,17 @@ $packagesToRemove = $packages | Where-Object {
     $packageName = $_
     $packagePrefixes -contains ($packagePrefixes | Where-Object { $packageName -like "$_*" })
 }
+$appsTotal   = @($packagesToRemove).Count
+$appsRemoved = 0
 foreach ($package in $packagesToRemove) {
     write-host "Removing $package :"
     & 'dism' '/English' "/image:$mainOSDrive\scratchdir" '/Remove-ProvisionedAppxPackage' "/PackageName:$package"
-    if ($LASTEXITCODE -ne 0) { Write-Host "  warning: could not remove $package (exit $LASTEXITCODE), continuing." }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  warning: could not remove $package (exit $LASTEXITCODE), continuing."
+        $script:buildWarnings++
+    } else {
+        $appsRemoved++
+    }
 }
 
 Write-Host "Removing of system apps complete! Now proceeding to removal of system packages..."
@@ -656,7 +691,10 @@ foreach ($packagePattern in $packagePatterns) {
     foreach ($packageIdentity in $packagesToRemove) {
         Write-Host "Removing $packageIdentity..."
         & dism /English /image:$scratchDir /Remove-Package /PackageName:$packageIdentity
-        if ($LASTEXITCODE -ne 0) { Write-Host "  warning: could not remove $packageIdentity (exit $LASTEXITCODE), continuing." }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  warning: could not remove $packageIdentity (exit $LASTEXITCODE), continuing."
+            $script:buildWarnings++
+        }
     }
 }
 
@@ -796,6 +834,7 @@ foreach ($dir in $dirsToCopy) {
         $sourceDirs = @(Get-ChildItem -Path $sourceDirectory -Filter $dir -Directory)
         if ($sourceDirs.Count -eq 0) {
             Write-Warning "WinSxS allowlist pattern matched nothing: $dir"
+            $script:buildWarnings++
         }
         foreach ($sourceDir in $sourceDirs) {
             $destDir = Join-Path -Path $destinationDirectory -ChildPath $sourceDir.Name
@@ -1043,6 +1082,11 @@ if ([System.IO.Directory]::Exists($ADKDepTools)) {
 
 & "$OSCDIMG" '-m' '-o' '-u2' '-udfver102' "-bootdata:2#p0,e,b$ScratchDisk\tiny11\boot\etfsboot.com#pEF,e,b$ScratchDisk\tiny11\efi\microsoft\boot\efisys.bin" "$ScratchDisk\tiny11" "$PSScriptRoot\tiny11.iso"
 
+$elapsed  = (Get-Date) - $buildStart
+$isoPath  = "$PSScriptRoot\tiny11.iso"
+$isoBytes = if (Test-Path $isoPath) { (Get-Item $isoPath).Length } else { 0 }
+Format-BuildSummary -Elapsed $elapsed -IsoBytes $isoBytes -IsoPath $isoPath -AppsRemoved $appsRemoved -AppsTotal $appsTotal -Warnings $script:buildWarnings |
+    ForEach-Object { Write-Host $_ }
 # Finishing up
 Write-Host "Creation completed! Press any key to exit the script..."
 Read-Host "Press Enter to continue"

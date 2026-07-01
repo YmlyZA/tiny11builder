@@ -168,6 +168,19 @@ Check 'adk preferred'  ((Resolve-OscdimgSource $true  $true)  -eq 'adk')
 Check 'bundled second' ((Resolve-OscdimgSource $false $true)  -eq 'bundled')
 Check 'download last'  ((Resolve-OscdimgSource $false $false) -eq 'download')
 
+Write-Host '== Format-BuildSummary =='
+$bs = Format-BuildSummary -Elapsed (New-TimeSpan -Minutes 27 -Seconds 41) -IsoBytes 4070127616 -IsoPath 'C:\x\tiny11.iso' -AppsRemoved 31 -AppsTotal 33 -Warnings 2
+Check 'summary result line'   ($bs -contains '  Result        : SUCCESS')
+Check 'summary elapsed line'  ($bs -contains '  Elapsed       : 27m 41s')
+Check 'summary iso/size line' ($bs -contains '  Output ISO    : C:\x\tiny11.iso  (3.79 GB)')
+Check 'summary apps line'     ($bs -contains '  Apps removed  : 31 of 33 provisioned Appx')
+Check 'summary warn line'     ($bs -contains '  Warnings      : 2 non-fatal (see log)')
+Check 'summary header'        ($bs -contains '===== BUILD SUMMARY =====')
+$bs0 = Format-BuildSummary -Elapsed (New-TimeSpan -Minutes 5 -Seconds 3) -IsoBytes 2147483648 -IsoPath 'C:\a.iso' -AppsRemoved 0 -AppsTotal 0 -Warnings 0
+Check 'summary warn none'     ($bs0 -contains '  Warnings      : none')
+Check 'summary size 2.00 GB'  ($bs0 -contains '  Output ISO    : C:\a.iso  (2.00 GB)')
+Check 'summary elapsed 5m 3s' ($bs0 -contains '  Elapsed       : 5m 3s')
+
 Write-Host '== maker parity: Resolve-BuildProfile =='
 $makerPath = Join-Path $repo 'tiny11maker.ps1'
 $mtk = $null; $mer = $null

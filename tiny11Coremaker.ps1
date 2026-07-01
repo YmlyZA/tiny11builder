@@ -33,7 +33,10 @@ param(
     [switch]$EnableNet35,
     [string[]]$Keep = @(),
     [string[]]$Remove = @(),
-    [switch]$Yes
+    [switch]$Yes,
+    [switch]$DryRun,
+    [ValidateSet('recovery', 'fast', 'none')][string]$Compress,
+    [switch]$Fast
 )
 
 # Normalize comma-separated values so -Keep "Paint,Camera" (one quoted token)
@@ -71,6 +74,9 @@ if (! $myWindowsPrincipal.IsInRole($adminRole))
     if ($Keep)       { $argList += " -Keep $($Keep -join ',')" }
     if ($Remove)     { $argList += " -Remove $($Remove -join ',')" }
     if ($Yes)        { $argList += " -Yes" }
+    if ($DryRun)     { $argList += " -DryRun" }
+    if ($Compress)   { $argList += " -Compress $Compress" }
+    if ($Fast)       { $argList += " -Fast" }
     $newProcess.Arguments = $argList;
     $newProcess.Verb = "runas";
     [System.Diagnostics.Process]::Start($newProcess);
@@ -234,6 +240,47 @@ function Invoke-Robocopy {
     $global:LASTEXITCODE = 0
 }
 
+function Get-AlwaysRemovePackages {
+    # Always-remove provisioned-Appx prefixes (bloat). The optional standalone
+    # utilities are handled separately via Get-OptionalUtilities / the picker /
+    # -Keep / -Remove, so none of them appear here.
+    @(
+        'Clipchamp.Clipchamp_',
+        'Microsoft.BingNews_',
+        'Microsoft.BingSearch_',
+        'Microsoft.BingWeather_',
+        'Microsoft.GamingApp_',
+        'Microsoft.GetHelp_',
+        'Microsoft.Getstarted_',
+        'Microsoft.MicrosoftOfficeHub_',
+        'Microsoft.MicrosoftSolitaireCollection_',
+        'Microsoft.People_',
+        'Microsoft.PowerAutomateDesktop_',
+        'Microsoft.Todos_',
+        'microsoft.windowscommunicationsapps_',
+        'Microsoft.WindowsFeedbackHub_',
+        'Microsoft.WindowsMaps_',
+        'Microsoft.Xbox.TCUI_',
+        'Microsoft.XboxGamingOverlay_',
+        'Microsoft.XboxGameOverlay_',
+        'Microsoft.XboxSpeechToTextOverlay_',
+        'Microsoft.XboxIdentityProvider_',
+        'Microsoft.YourPhone_',
+        'MicrosoftCorporationII.MicrosoftFamily_',
+        'MicrosoftCorporationII.QuickAssist_',
+        'MicrosoftTeams_',
+        'MSTeams_',
+        'Microsoft.Windows.Teams_',
+        'Microsoft.549981C3F5F10_',
+        'Microsoft.Copilot_',
+        'Microsoft.Windows.Copilot',
+        'Microsoft.Windows.DevHome_',
+        'Microsoft.Windows.CrossDevice_',
+        'Microsoft.OutlookForWindows_',
+        'MicrosoftWindows.Client.WebExperience_'
+    )
+}
+
 Start-Transcript -Path "$PSScriptRoot\tiny11.log"
 # Ask the user for input
 Write-Host "Welcome to tiny11 core builder! BETA 09-05-25"
@@ -264,6 +311,8 @@ if ($Yes) {
 # alias of $mainOSDrive so the registry/oscdimg sections that reference it
 # resolve to a real, absolute path instead of an empty string.
 $ScratchDisk = $mainOSDrive
+$buildProfile = Resolve-BuildProfile -Compress $Compress -Fast:$Fast
+Write-Verbose "Build profile: Compress=$($buildProfile.Compress) SkipCleanup=$($buildProfile.SkipCleanup) UseEsd=$($buildProfile.UseEsd)"
 $hostArchitecture = $Env:PROCESSOR_ARCHITECTURE
 
 # Ensure the unattend answer file exists locally; it is injected into Sysprep later
@@ -371,45 +420,9 @@ $packages = & 'dism' '/English' "/image:$mainOSDrive\scratchdir" '/Get-Provision
             $matches[1]
         }
     }
-# Always-remove bloat. The 12 optional standalone utilities (Terminal, Calculator,
-# Notepad, Photos, Paint, Camera, SoundRecorder, StickyNotes, Clock, MediaPlayer,
-# MoviesTV, SnippingTool) are handled separately in the next block via
-# Get-OptionalUtilities / the picker / -Keep / -Remove, so they must NOT appear here.
-$packagePrefixes = @(
-    'Clipchamp.Clipchamp_',
-    'Microsoft.BingNews_',
-    'Microsoft.BingSearch_',
-    'Microsoft.BingWeather_',
-    'Microsoft.GamingApp_',
-    'Microsoft.GetHelp_',
-    'Microsoft.Getstarted_',
-    'Microsoft.MicrosoftOfficeHub_',
-    'Microsoft.MicrosoftSolitaireCollection_',
-    'Microsoft.People_',
-    'Microsoft.PowerAutomateDesktop_',
-    'Microsoft.Todos_',
-    'microsoft.windowscommunicationsapps_',
-    'Microsoft.WindowsFeedbackHub_',
-    'Microsoft.WindowsMaps_',
-    'Microsoft.Xbox.TCUI_',
-    'Microsoft.XboxGamingOverlay_',
-    'Microsoft.XboxGameOverlay_',
-    'Microsoft.XboxSpeechToTextOverlay_',
-    'Microsoft.XboxIdentityProvider_',
-    'Microsoft.YourPhone_',
-    'MicrosoftCorporationII.MicrosoftFamily_',
-    'MicrosoftCorporationII.QuickAssist_',
-    'MicrosoftTeams_',
-    'MSTeams_',
-    'Microsoft.Windows.Teams_',
-    'Microsoft.549981C3F5F10_',
-    'Microsoft.Copilot_',
-    'Microsoft.Windows.Copilot',
-    'Microsoft.Windows.DevHome_',
-    'Microsoft.Windows.CrossDevice_',
-    'Microsoft.OutlookForWindows_',
-    'MicrosoftWindows.Client.WebExperience_'
-)
+# Always-remove bloat comes from Get-AlwaysRemovePackages (single source of truth,
+# also used by -DryRun). Optional utilities are merged in by the picker block below.
+$packagePrefixes = Get-AlwaysRemovePackages
 if ($Yes) {
     $picked = Resolve-OptionalUtilities -Keep $Keep -Remove $Remove
 } else {

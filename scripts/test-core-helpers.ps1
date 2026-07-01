@@ -120,6 +120,14 @@ Check 'rc 7 success'  (Test-RobocopySucceeded 7)
 Check 'rc 8 failure'  (-not (Test-RobocopySucceeded 8))
 Check 'rc 16 failure' (-not (Test-RobocopySucceeded 16))
 
+Write-Host '== Get-AlwaysRemovePackages =='
+$base = Get-AlwaysRemovePackages
+Check 'base list non-empty'          ($base.Count -gt 0)
+Check 'base excludes Terminal'       (-not ($base -match 'WindowsTerminal'))
+Check 'base excludes Calculator'     (-not ($base -match 'WindowsCalculator'))
+Check 'base excludes Notepad'        (-not ($base -match 'WindowsNotepad'))
+Check 'base excludes Photos'         (-not ($base -match 'Windows\.Photos'))
+
 Write-Host ""
 Write-Host "RESULT: $script:pass passed, $script:fail failed"
 if ($script:fail) { exit 1 }

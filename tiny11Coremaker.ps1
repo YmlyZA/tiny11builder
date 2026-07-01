@@ -331,6 +331,27 @@ if (-not (Test-Path "$DriveLetter\")) {
     throw "Image drive '$DriveLetter' was not found. Mount the Windows 11 ISO and pass its drive letter via -ISO (or at the prompt)."
 }
 
+if ($DryRun) {
+    $drOpt = Resolve-OptionalUtilities -Keep $Keep -Remove $Remove
+    $drBase = Get-AlwaysRemovePackages
+    Write-Host ""
+    Write-Host "===== DRY RUN (no copy / no mount performed) ====="
+    Write-Host "  Image drive (-ISO)   : $DriveLetter"
+    Write-Host "  Scratch (-SCRATCH)   : $mainOSDrive"
+    Write-Host ("  Image index (-Index) : {0}" -f $(if ($Index) { $Index } else { '(prompt at build time)' }))
+    Write-Host "  Compression          : $($buildProfile.Compress)  (ESD: $($buildProfile.UseEsd))"
+    Write-Host "  Skip component cleanup: $($buildProfile.SkipCleanup)"
+    Write-Host "  Enable .NET 3.5      : $([bool]$EnableNet35)"
+    Write-Host "  Optional utilities KEPT   : $($drOpt.KeptNames -join ', ')"
+    Write-Host "  Optional utilities REMOVED: $($drOpt.RemovePrefixes -join ', ')"
+    Write-Host "  Always-remove Appx packages ($($drBase.Count)):"
+    $drBase | ForEach-Object { Write-Host "    - $_" }
+    Write-Host "  Planned steps: copy image -> mount install.wim -> remove Appx -> remove system packages -> (optional .NET) -> remove Edge/OneDrive/WinRE -> rebuild WinSxS -> registry tweaks -> $(if ($buildProfile.SkipCleanup) { 'skip cleanup' } else { 'component cleanup' }) -> unmount/commit -> export ($($buildProfile.Compress)) -> bypass boot.wim -> create ISO"
+    Write-Host "===== END DRY RUN ====="
+    Stop-Transcript
+    exit 0
+}
+
 # Everything from here on touches a mounted image and/or loaded offline hives.
 # Wrap it so that ANY terminating failure still tears those down (see finally),
 # instead of leaving the host with a stuck mount or loaded hives.

@@ -391,6 +391,7 @@ function New-UnattendXml {
         [string]$Language = 'en-US',
         [switch]$ZeroTouch
     )
+    $Architecture = "$Architecture".ToLower()
     $escUser = [System.Security.SecurityElement]::Escape($UserName)
     $escPass = [System.Security.SecurityElement]::Escape($Password)
     $escTz   = [System.Security.SecurityElement]::Escape($TimeZone)
@@ -479,7 +480,6 @@ function New-UnattendXml {
                 <Password><Value>$escPass</Value><PlainText>true</PlainText></Password>
             </AutoLogon>
             <TimeZone>$escTz</TimeZone>
-            <UserData><ProductKey><Key></Key></ProductKey></UserData>
         </component>
     </settings>
 </unattend>

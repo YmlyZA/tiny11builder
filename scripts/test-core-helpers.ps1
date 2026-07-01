@@ -208,6 +208,9 @@ $uaE = New-UnattendXml -Architecture 'amd64' -UserName 'a&b' -Password '' -TimeZ
 $okE = $true; try { $null = [xml]$uaE } catch { $okE = $false }
 Check 'escaped user parses'   $okE
 Check 'escaped user amp'      ($uaE -match '<Name>a&amp;b</Name>')
+$uaCase = New-UnattendXml -Architecture 'ARM64' -UserName 'User' -Password '' -TimeZone 'UTC' -Language 'en-US'
+Check 'arch normalized lowercase' ($uaCase -match 'processorArchitecture="arm64"')
+Check 'arch not uppercase'        (-not ($uaCase -cmatch 'processorArchitecture="ARM64"'))
 
 Write-Host '== maker parity: Resolve-BuildProfile =='
 $makerPath = Join-Path $repo 'tiny11maker.ps1'

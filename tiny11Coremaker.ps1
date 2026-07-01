@@ -351,7 +351,7 @@ if ((Test-Path "$DriveLetter\sources\boot.wim") -eq $false -or (Test-Path "$Driv
 }
 
 Write-Host "Copying Windows image..."
-Copy-Item -Path "$DriveLetter\*" -Destination "$mainOSDrive\tiny11" -Recurse -Force > $null
+Invoke-Robocopy -Source "$DriveLetter\" -Destination "$mainOSDrive\tiny11"
 Set-ItemProperty -Path "$mainOSDrive\tiny11\sources\install.esd" -Name IsReadOnly -Value $false > $null 2>&1
 Remove-Item "$mainOSDrive\tiny11\sources\install.esd" > $null 2>&1
 Write-Host "Copy complete!"
@@ -810,14 +810,18 @@ foreach ($path in $servicePaths) {
 Write-Host "Tweaking complete!"
 Write-Host "Unmounting Registry..."
 Remove-OfflineHives
-Write-Host "Cleaning up image..."
-& 'dism' '/English' "/image:$mainOSDrive\scratchdir" '/Cleanup-Image' '/StartComponentCleanup' '/ResetBase' > $null
-Write-Host "Cleanup complete."
+if ($buildProfile.SkipCleanup) {
+    Write-Host "Skipping component cleanup (-Fast)."
+} else {
+    Write-Host "Cleaning up image..."
+    & 'dism' '/English' "/image:$mainOSDrive\scratchdir" '/Cleanup-Image' '/StartComponentCleanup' '/ResetBase' > $null
+    Write-Host "Cleanup complete."
+}
 Write-Host ' '
 Write-Host "Unmounting image..."
 Invoke-Dism '/English' '/unmount-image' "/mountdir:$mainOSDrive\scratchdir" '/commit'
-Write-Host "Exporting image..."
-Invoke-Dism '/English' '/Export-Image' "/SourceImageFile:$mainOSDrive\tiny11\sources\install.wim" "/SourceIndex:$imageIndex" "/DestinationImageFile:$mainOSDrive\tiny11\sources\install2.wim" '/compress:max'
+Write-Host "Exporting image (compress: $($buildProfile.WimExportCompress))..."
+Invoke-Dism '/English' '/Export-Image' "/SourceImageFile:$mainOSDrive\tiny11\sources\install.wim" "/SourceIndex:$imageIndex" "/DestinationImageFile:$mainOSDrive\tiny11\sources\install2.wim" "/compress:$($buildProfile.WimExportCompress)"
 Remove-Item -Path "$mainOSDrive\tiny11\sources\install.wim" -Force > $null
 Rename-Item -Path "$mainOSDrive\tiny11\sources\install2.wim" -NewName "install.wim" > $null
 Write-Host "Windows image completed. Continuing with boot.wim."
@@ -853,9 +857,13 @@ Remove-OfflineHives
 Write-Host "Unmounting image..."
 Invoke-Dism '/English' '/unmount-image' "/mountdir:$mainOSDrive\scratchdir" '/commit'
 Clear-Host
-Write-Host "Exporting ESD. This may take a while..."
-Invoke-Dism /Export-Image /SourceImageFile:"$mainOSDrive\tiny11\sources\install.wim" /SourceIndex:1 /DestinationImageFile:"$mainOSDrive\tiny11\sources\install.esd" /Compress:recovery
-Remove-Item "$mainOSDrive\tiny11\sources\install.wim" > $null 2>&1
+if ($buildProfile.UseEsd) {
+    Write-Host "Exporting ESD. This may take a while..."
+    Invoke-Dism /Export-Image /SourceImageFile:"$mainOSDrive\tiny11\sources\install.wim" /SourceIndex:1 /DestinationImageFile:"$mainOSDrive\tiny11\sources\install.esd" /Compress:recovery
+    Remove-Item "$mainOSDrive\tiny11\sources\install.wim" > $null 2>&1
+} else {
+    Write-Host "Keeping install.wim (compress: $($buildProfile.Compress)); skipping ESD conversion."
+}
 Write-Host "The tiny11 image is now completed. Proceeding with the making of the ISO..."
 Write-Host "Creating ISO image..."
 $ADKDepTools = "C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\$hostarchitecture\Oscdimg"

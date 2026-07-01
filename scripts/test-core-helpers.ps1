@@ -102,9 +102,15 @@ $p = Resolve-BuildProfile -Compress 'none'
 Check '-Compress none'                 ($p.Compress -eq 'none')
 Check '-Compress none no esd'          ($p.UseEsd -eq $false)
 Check '-Compress none not skipclean'   ($p.SkipCleanup -eq $false)
+Check '-Compress none wim export none' ($p.WimExportCompress -eq 'none')
 $p = Resolve-BuildProfile -Compress 'none' -Fast
 Check 'explicit compress overrides Fast' ($p.Compress -eq 'none')
 Check 'Fast still skips cleanup w/ explicit compress' ($p.SkipCleanup -eq $true)
+Check '-Compress none -Fast wim export none' ($p.WimExportCompress -eq 'none')
+$p = Resolve-BuildProfile -Compress 'fast'
+Check '-Compress fast direct'          ($p.Compress -eq 'fast')
+Check '-Compress fast wim export fast' ($p.WimExportCompress -eq 'fast')
+Check '-Compress fast no esd'          ($p.UseEsd -eq $false)
 CheckThrows 'invalid compress throws'  { Resolve-BuildProfile -Compress 'zip' }
 
 Write-Host '== Test-RobocopySucceeded =='

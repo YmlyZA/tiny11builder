@@ -173,12 +173,20 @@ $makerPath = Join-Path $repo 'tiny11maker.ps1'
 $mtk = $null; $mer = $null
 $mast = [System.Management.Automation.Language.Parser]::ParseFile($makerPath, [ref]$mtk, [ref]$mer)
 $mast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
-    Where-Object { $_.Name -in 'Resolve-BuildProfile', 'Test-RobocopySucceeded' } |
+    Where-Object { $_.Name -in 'Resolve-BuildProfile', 'Test-RobocopySucceeded', 'Get-AvailableImageIndex', 'Test-ImageIndexAvailable', 'Get-RequiredScratchBytes', 'Test-SufficientScratch', 'Resolve-OscdimgSource' } |
     ForEach-Object { Invoke-Expression ($_.Extent.Text -replace 'function\s+(\S+)', 'function maker_$1') }
 $mp = maker_Resolve-BuildProfile -Fast
 Check 'maker -Fast compress fast' ($mp.Compress -eq 'fast')
 Check 'maker -Fast skips cleanup' ($mp.SkipCleanup -eq $true)
 Check 'maker rc 8 failure' (-not (maker_Test-RobocopySucceeded 8))
+
+$mAvail = maker_Get-AvailableImageIndex @('Index : 1', 'Name : Windows 11 Pro', 'Size : 16,500,000,000 bytes')
+Check 'maker parses one image'   ($mAvail.Count -eq 1)
+Check 'maker index present'      (maker_Test-ImageIndexAvailable 1 $mAvail)
+Check 'maker index absent'       (-not (maker_Test-ImageIndexAvailable 9 $mAvail))
+Check 'maker required floor'     ((maker_Get-RequiredScratchBytes 1GB) -eq 20GB)
+Check 'maker scratch short'      (-not (maker_Test-SufficientScratch 30GB 20GB).Ok)
+Check 'maker oscdimg download'   ((maker_Resolve-OscdimgSource $false $false) -eq 'download')
 
 Write-Host ""
 Write-Host "RESULT: $script:pass passed, $script:fail failed"

@@ -181,6 +181,12 @@ Check 'summary warn none'     ($bs0 -contains '  Warnings      : none')
 Check 'summary size 2.00 GB'  ($bs0 -contains '  Output ISO    : C:\a.iso  (2.00 GB)')
 Check 'summary elapsed 5m 3s' ($bs0 -contains '  Elapsed       : 5m 3s')
 
+Write-Host '== Test-IsoResult =='
+Check 'iso ok'           (Test-IsoResult -ExitCode 0 -IsoExists $true  -IsoBytes 100)
+Check 'iso bad exit'     (-not (Test-IsoResult -ExitCode 1 -IsoExists $true  -IsoBytes 100))
+Check 'iso missing file' (-not (Test-IsoResult -ExitCode 0 -IsoExists $false -IsoBytes 0))
+Check 'iso empty file'   (-not (Test-IsoResult -ExitCode 0 -IsoExists $true  -IsoBytes 0))
+
 Write-Host '== maker parity: Resolve-BuildProfile =='
 $makerPath = Join-Path $repo 'tiny11maker.ps1'
 $mtk = $null; $mer = $null

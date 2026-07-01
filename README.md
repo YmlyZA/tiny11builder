@@ -1,4 +1,7 @@
 # tiny11builder
+
+[![CI](https://github.com/YmlyZA/tiny11builder/actions/workflows/ci.yml/badge.svg)](https://github.com/YmlyZA/tiny11builder/actions/workflows/ci.yml)
+
 *Scripts to build a trimmed-down Windows 11 image - now in **PowerShell**!*
 
 ## Introduction :

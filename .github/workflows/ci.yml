@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'harden/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  gates:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install PSScriptAnalyzer
+        shell: powershell
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+
+      - name: Parse check (Windows PowerShell 5.1)
+        shell: powershell
+        run: .\scripts\parse-check.ps1
+
+      - name: Lint (PSScriptAnalyzer)
+        shell: powershell
+        run: .\scripts\linter.ps1
+
+      - name: Unit tests (helpers + cross-script parity)
+        shell: powershell
+        run: .\scripts\test-core-helpers.ps1

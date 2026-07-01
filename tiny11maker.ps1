@@ -159,8 +159,10 @@ if ($Yes) {
     if (-not $Index) { throw "-Yes requires -Index (no interactive prompt available)." }
 }
 
-if (-not (Test-Path -Path "$PSScriptRoot/autounattend.xml")) {
-    Invoke-RestMethod "https://raw.githubusercontent.com/ntdevlabs/tiny11builder/refs/heads/main/autounattend.xml" -OutFile "$PSScriptRoot/autounattend.xml"
+if (-not $DryRun) {
+    if (-not (Test-Path -Path "$PSScriptRoot/autounattend.xml")) {
+        Invoke-RestMethod "https://raw.githubusercontent.com/ntdevlabs/tiny11builder/refs/heads/main/autounattend.xml" -OutFile "$PSScriptRoot/autounattend.xml"
+    }
 }
 
 # Start the transcript and prepare the window
@@ -171,7 +173,7 @@ Clear-Host
 Write-Output "Welcome to the tiny11 image creator! Release: 09-07-25"
 
 $hostArchitecture = $Env:PROCESSOR_ARCHITECTURE
-New-Item -ItemType Directory -Force -Path "$ScratchDisk\tiny11\sources" | Out-Null
+if (-not $DryRun) { New-Item -ItemType Directory -Force -Path "$ScratchDisk\tiny11\sources" | Out-Null }
 do {
     if (-not $ISO) {
         $DriveLetter = Read-Host "Please enter the drive letter for the Windows 11 image"
@@ -208,10 +210,10 @@ if ((Test-Path "$DriveLetter\sources\boot.wim") -eq $false -or (Test-Path "$Driv
     if ((Test-Path "$DriveLetter\sources\install.esd") -eq $true) {
         Write-Output "Found install.esd, converting to install.wim..."
         Get-WindowsImage -ImagePath $DriveLetter\sources\install.esd
-        if ($Index) { $index = $Index } else { $index = Read-Host "Please enter the image index" }
+        if ($Index) { $imageIndex = $Index } else { $imageIndex = Read-Host "Please enter the image index" }
         Write-Output ' '
         Write-Output 'Converting install.esd to install.wim. This may take a while...'
-        Export-WindowsImage -SourceImagePath $DriveLetter\sources\install.esd -SourceIndex $index -DestinationImagePath $ScratchDisk\tiny11\sources\install.wim -Compressiontype Maximum -CheckIntegrity
+        Export-WindowsImage -SourceImagePath $DriveLetter\sources\install.esd -SourceIndex $imageIndex -DestinationImagePath $ScratchDisk\tiny11\sources\install.wim -Compressiontype Maximum -CheckIntegrity
     } else {
         Write-Output "Can't find Windows OS Installation files in the specified Drive Letter.."
         Write-Output "Please enter the correct DVD Drive Letter.."
@@ -228,11 +230,11 @@ Start-Sleep -Seconds 2
 Clear-Host
 Write-Output "Getting image information:"
 $ImagesIndex = (Get-WindowsImage -ImagePath $ScratchDisk\tiny11\sources\install.wim).ImageIndex
-if ($Index) { $index = $Index }
-while ($ImagesIndex -notcontains $index) {
-    if ($Yes) { throw "Image index '$index' not found in install.wim; pass a valid -Index for unattended runs." }
+if ($Index) { $imageIndex = $Index }
+while ($ImagesIndex -notcontains $imageIndex) {
+    if ($Yes) { throw "Image index '$imageIndex' not found in install.wim; pass a valid -Index for unattended runs." }
     Get-WindowsImage -ImagePath $ScratchDisk\tiny11\sources\install.wim
-    $index = Read-Host "Please enter the image index"
+    $imageIndex = Read-Host "Please enter the image index"
 }
 Write-Output "Mounting Windows image. This may take a while."
 $wimFilePath = "$ScratchDisk\tiny11\sources\install.wim"
@@ -254,7 +256,7 @@ if (Test-Path "$ScratchDisk\scratchdir\Windows") {
 }
 Remove-Item -Path "$ScratchDisk\scratchdir" -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path "$ScratchDisk\scratchdir" > $null
-Mount-WindowsImage -ImagePath $ScratchDisk\tiny11\sources\install.wim -Index $index -Path $ScratchDisk\scratchdir
+Mount-WindowsImage -ImagePath $ScratchDisk\tiny11\sources\install.wim -Index $imageIndex -Path $ScratchDisk\scratchdir
 
 $imageIntl = & dism /English /Get-Intl "/Image:$($ScratchDisk)\scratchdir"
 $languageLine = $imageIntl -split '\n' | Where-Object { $_ -match 'Default system UI language : ([a-zA-Z]{2}-[a-zA-Z]{2})' }
@@ -266,7 +268,7 @@ if ($languageLine) {
     Write-Output "Default system UI language code not found."
 }
 
-$imageInfo = & 'dism' '/English' '/Get-WimInfo' "/wimFile:$($ScratchDisk)\tiny11\sources\install.wim" "/index:$index"
+$imageInfo = & 'dism' '/English' '/Get-WimInfo' "/wimFile:$($ScratchDisk)\tiny11\sources\install.wim" "/index:$imageIndex"
 $lines = $imageInfo -split '\r?\n'
 
 foreach ($line in $lines) {
@@ -489,7 +491,7 @@ Write-Output ' '
 Write-Output "Unmounting image..."
 Dismount-WindowsImage -Path $ScratchDisk\scratchdir -Save
 Write-Host "Exporting image (compress: $($buildProfile.Compress))..."
-Dism.exe /Export-Image /SourceImageFile:"$ScratchDisk\tiny11\sources\install.wim" /SourceIndex:$index /DestinationImageFile:"$ScratchDisk\tiny11\sources\install2.wim" /Compress:$($buildProfile.Compress)
+Dism.exe /Export-Image /SourceImageFile:"$ScratchDisk\tiny11\sources\install.wim" /SourceIndex:$imageIndex /DestinationImageFile:"$ScratchDisk\tiny11\sources\install2.wim" /Compress:$($buildProfile.Compress)
 Remove-Item -Path "$ScratchDisk\tiny11\sources\install.wim" -Force | Out-Null
 Rename-Item -Path "$ScratchDisk\tiny11\sources\install2.wim" -NewName "install.wim" | Out-Null
 Write-Output "Windows image completed. Continuing with boot.wim."

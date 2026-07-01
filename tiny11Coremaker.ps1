@@ -318,11 +318,14 @@ $hostArchitecture = $Env:PROCESSOR_ARCHITECTURE
 # Ensure the unattend answer file exists locally; it is injected into Sysprep later
 # for the OOBE / local-account bypass. The Core script used to assume it was already
 # present and would throw "Cannot find path ...autounattend.xml" when run standalone.
-if (-not (Test-Path -Path "$PSScriptRoot\autounattend.xml")) {
-    Write-Host "autounattend.xml not found locally, downloading..."
-    Invoke-RestMethod "https://raw.githubusercontent.com/ntdevlabs/tiny11builder/refs/heads/main/autounattend.xml" -OutFile "$PSScriptRoot\autounattend.xml"
+# A dry run neither copies nor mounts, so skip these side effects (network + dir).
+if (-not $DryRun) {
+    if (-not (Test-Path -Path "$PSScriptRoot\autounattend.xml")) {
+        Write-Host "autounattend.xml not found locally, downloading..."
+        Invoke-RestMethod "https://raw.githubusercontent.com/ntdevlabs/tiny11builder/refs/heads/main/autounattend.xml" -OutFile "$PSScriptRoot\autounattend.xml"
+    }
+    New-Item -ItemType Directory -Force -Path "$mainOSDrive\tiny11\sources" > $null
 }
-New-Item -ItemType Directory -Force -Path "$mainOSDrive\tiny11\sources" > $null
 if ($ISO) { $DriveLetter = $ISO } else {
     $DriveLetter = Read-Host "Please enter the drive letter for the Windows 11 image"
 }

@@ -26,6 +26,7 @@
 .PARAMETER Yes
     Non-interactive: skip confirmation prompts and the utility picker; requires -ISO and -Index.
 #>
+# $Password is intentionally plain-text: it is written verbatim into autounattend.xml for Windows Setup.
 param(
     [ValidatePattern('^[c-zC-Z]$')][string]$ISO,
     [ValidatePattern('^[c-zC-Z]$')][string]$SCRATCH,
@@ -36,7 +37,11 @@ param(
     [switch]$Yes,
     [switch]$DryRun,
     [ValidateSet('recovery', 'fast', 'none')][string]$Compress,
-    [switch]$Fast
+    [switch]$Fast,
+    [string]$User = 'User',
+    [string]$Password = '',
+    [string]$TimeZone = 'UTC',
+    [switch]$ZeroTouch
 )
 
 # Normalize comma-separated values so -Keep "Paint,Camera" (one quoted token)
@@ -77,6 +82,10 @@ if (! $myWindowsPrincipal.IsInRole($adminRole))
     if ($DryRun)     { $argList += " -DryRun" }
     if ($Compress)   { $argList += " -Compress $Compress" }
     if ($Fast)       { $argList += " -Fast" }
+    $argList += " -User `"$User`""
+    if ($Password) { $argList += " -Password `"$Password`"" }
+    $argList += " -TimeZone `"$TimeZone`""
+    if ($ZeroTouch) { $argList += " -ZeroTouch" }
     $newProcess.Arguments = $argList;
     $newProcess.Verb = "runas";
     [System.Diagnostics.Process]::Start($newProcess);
@@ -369,6 +378,114 @@ function Test-IsoResult {
     return ($ExitCode -eq 0 -and $IsoExists -and $IsoBytes -gt 0)
 }
 
+function New-UnattendXml {
+    # Pure: builds the complete Windows Setup answer file (windowsPE + oobeSystem).
+    # Tier A (default) skips OOBE to an auto-logged-in local admin; -ZeroTouch adds
+    # a disk-0 wipe (clean UEFI layout) for a zero-click install. Arch-aware.
+    # Password is intentionally plain-text: Windows Setup autounattend.xml requires it.
+    param(
+        [ValidateSet('amd64', 'arm64')][string]$Architecture,
+        [string]$UserName,
+        [string]$Password,
+        [string]$TimeZone,
+        [string]$Language = 'en-US',
+        [switch]$ZeroTouch
+    )
+    $Architecture = "$Architecture".ToLower()
+    $escUser = [System.Security.SecurityElement]::Escape($UserName)
+    $escPass = [System.Security.SecurityElement]::Escape($Password)
+    $escTz   = [System.Security.SecurityElement]::Escape($TimeZone)
+    $ns      = 'xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+    $common  = "publicKeyToken=`"31bf3856ad364e35`" language=`"neutral`" versionScope=`"nonSxS`" $ns"
+    if ($ZeroTouch) {
+        $diskConfig = @"
+
+            <DiskConfiguration>
+                <Disk wcm:action="add">
+                    <DiskID>0</DiskID>
+                    <WillWipeDisk>true</WillWipeDisk>
+                    <CreatePartitions>
+                        <CreatePartition wcm:action="add"><Order>1</Order><Type>EFI</Type><Size>260</Size></CreatePartition>
+                        <CreatePartition wcm:action="add"><Order>2</Order><Type>MSR</Type><Size>16</Size></CreatePartition>
+                        <CreatePartition wcm:action="add"><Order>3</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition>
+                    </CreatePartitions>
+                    <ModifyPartitions>
+                        <ModifyPartition wcm:action="add"><Order>1</Order><PartitionID>1</PartitionID><Label>System</Label><Format>FAT32</Format></ModifyPartition>
+                        <ModifyPartition wcm:action="add"><Order>2</Order><PartitionID>2</PartitionID></ModifyPartition>
+                        <ModifyPartition wcm:action="add"><Order>3</Order><PartitionID>3</PartitionID><Label>Windows</Label><Format>NTFS</Format><Letter>C</Letter></ModifyPartition>
+                    </ModifyPartitions>
+                </Disk>
+                <WillShowUI>OnError</WillShowUI>
+            </DiskConfiguration>
+"@
+        $installTo = '<InstallTo><DiskID>0</DiskID><PartitionID>3</PartitionID></InstallTo>'
+    } else {
+        $diskConfig = ''
+        $installTo  = ''
+    }
+    return @"
+<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+    <settings pass="windowsPE">
+        <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="$Architecture" $common>
+            <SetupUILanguage><UILanguage>$Language</UILanguage></SetupUILanguage>
+            <InputLocale>$Language</InputLocale>
+            <SystemLocale>$Language</SystemLocale>
+            <UILanguage>$Language</UILanguage>
+            <UserLocale>$Language</UserLocale>
+        </component>
+        <component name="Microsoft-Windows-Setup" processorArchitecture="$Architecture" $common>
+            <UserData>
+                <ProductKey><Key></Key></ProductKey>
+                <AcceptEula>true</AcceptEula>
+            </UserData>
+            <ImageInstall>
+                <OSImage>
+                    <InstallFrom><MetaData wcm:action="add"><Key>/IMAGE/INDEX</Key><Value>1</Value></MetaData></InstallFrom>
+                    $installTo
+                    <WillShowUI>OnError</WillShowUI>
+                </OSImage>
+            </ImageInstall>$diskConfig
+        </component>
+    </settings>
+    <settings pass="oobeSystem">
+        <component name="Microsoft-Windows-International-Core" processorArchitecture="$Architecture" $common>
+            <InputLocale>$Language</InputLocale>
+            <SystemLocale>$Language</SystemLocale>
+            <UILanguage>$Language</UILanguage>
+            <UserLocale>$Language</UserLocale>
+        </component>
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="$Architecture" $common>
+            <OOBE>
+                <HideEULAPage>true</HideEULAPage>
+                <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+                <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+                <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+                <NetworkLocation>Home</NetworkLocation>
+                <ProtectYourPC>3</ProtectYourPC>
+            </OOBE>
+            <UserAccounts>
+                <LocalAccounts>
+                    <LocalAccount wcm:action="add">
+                        <Name>$escUser</Name>
+                        <Group>Administrators</Group>
+                        <Password><Value>$escPass</Value><PlainText>true</PlainText></Password>
+                    </LocalAccount>
+                </LocalAccounts>
+            </UserAccounts>
+            <AutoLogon>
+                <Username>$escUser</Username>
+                <Enabled>true</Enabled>
+                <LogonCount>999999999</LogonCount>
+                <Password><Value>$escPass</Value><PlainText>true</PlainText></Password>
+            </AutoLogon>
+            <TimeZone>$escTz</TimeZone>
+        </component>
+    </settings>
+</unattend>
+"@
+}
+
 # Close any transcript leaked by a prior aborted run in this same session,
 # so this run always starts its own clean transcript.
 Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
@@ -405,18 +522,11 @@ if ($Yes) {
 # resolve to a real, absolute path instead of an empty string.
 $ScratchDisk = $mainOSDrive
 $buildProfile = Resolve-BuildProfile -Compress $Compress -Fast:$Fast
+if ($ZeroTouch) { Write-Warning "-ZeroTouch: the produced image will ERASE DISK 0 automatically during Windows Setup. Use only on VMs / dedicated test machines." }
 Write-Verbose "Build profile: Compress=$($buildProfile.Compress) SkipCleanup=$($buildProfile.SkipCleanup) UseEsd=$($buildProfile.UseEsd)"
 $hostArchitecture = $Env:PROCESSOR_ARCHITECTURE
 
-# Ensure the unattend answer file exists locally; it is injected into Sysprep later
-# for the OOBE / local-account bypass. The Core script used to assume it was already
-# present and would throw "Cannot find path ...autounattend.xml" when run standalone.
-# A dry run neither copies nor mounts, so skip these side effects (network + dir).
 if (-not $DryRun) {
-    if (-not (Test-Path -Path "$PSScriptRoot\autounattend.xml")) {
-        Write-Host "autounattend.xml not found locally, downloading..."
-        Invoke-RestMethod "https://raw.githubusercontent.com/ntdevlabs/tiny11builder/refs/heads/main/autounattend.xml" -OutFile "$PSScriptRoot\autounattend.xml"
-    }
     New-Item -ItemType Directory -Force -Path "$mainOSDrive\tiny11\sources" > $null
 }
 if ($ISO) { $DriveLetter = $ISO } else {
@@ -470,6 +580,9 @@ if ($DryRun) {
     Write-Host "  Image drive (-ISO)   : $DriveLetter"
     Write-Host "  Scratch (-SCRATCH)   : $mainOSDrive"
     Write-Host ("  Image index (-Index) : {0}" -f $(if ($Index) { $Index } else { '(prompt at build time)' }))
+    Write-Host "  Unattended user      : $User (autologon)"
+    Write-Host "  Time zone            : $TimeZone"
+    Write-Host "  Install mode         : $(if ($ZeroTouch) { 'ZeroTouch (ERASES disk 0)' } else { 'OOBE-skip (keeps disk selection)' })"
     if ($Index -and -not $indexOk) {
         Write-Host "     ERROR: index $Index not found. $indexMsg"
     } elseif ($availableIndexes.Count) {
@@ -908,7 +1021,11 @@ Write-Host "Disabling Sponsored Apps:"
 & 'reg' 'add' 'HKLM\zSOFTWARE\Policies\Microsoft\Windows\CloudContent' '/v' 'DisableCloudOptimizedContent' '/t' 'REG_DWORD' '/d' '1' '/f' | Out-Null
 Write-Host "Enabling Local Accounts on OOBE:"
 & 'reg' 'add' 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\OOBE' '/v' 'BypassNRO' '/t' 'REG_DWORD' '/d' '1' '/f' | Out-Null
-Copy-Item -Path "$PSScriptRoot\autounattend.xml" -Destination "$ScratchDisk\scratchdir\Windows\System32\Sysprep\autounattend.xml" -Force | Out-Null
+$langForUnattend = if ($languageCode) { $languageCode } else { 'en-US' }
+$unattendXml = New-UnattendXml -Architecture $architecture -UserName $User -Password $Password -TimeZone $TimeZone -Language $langForUnattend -ZeroTouch:$ZeroTouch
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText("$ScratchDisk\scratchdir\Windows\System32\Sysprep\autounattend.xml", $unattendXml, $utf8NoBom)
+[System.IO.File]::WriteAllText("$ScratchDisk\tiny11\autounattend.xml", $unattendXml, $utf8NoBom)
 Write-Host "Disabling Reserved Storage:"
 & 'reg' 'add' 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\ReserveManager' '/v' 'ShippedWithReserves' '/t' 'REG_DWORD' '/d' '0' '/f' | Out-Null
 Write-Host "Disabling BitLocker Device Encryption"

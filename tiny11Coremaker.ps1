@@ -281,6 +281,63 @@ function Get-AlwaysRemovePackages {
     )
 }
 
+function Get-AvailableImageIndex {
+    # Parse `dism /Get-WimInfo /wimfile:<x>` text (the no-index enumeration) into
+    # one object per image. Pure: takes text, returns objects. Missing Size lines
+    # yield SizeBytes 0 so the free-space check falls back to its floor.
+    param([string[]]$WimInfoText)
+    if ($WimInfoText -is [string]) { $WimInfoText = $WimInfoText -split '\r?\n' }
+    $images = @()
+    $cur = $null
+    foreach ($line in $WimInfoText) {
+        $text = [string]$line
+        if ($text -match '^\s*Index\s*:\s*(\d+)') {
+            if ($cur) { $images += [pscustomobject]$cur }
+            $cur = [ordered]@{ Index = [int]$Matches[1]; Name = ''; SizeBytes = [long]0 }
+        } elseif ($cur -and $text -match '^\s*Name\s*:\s*(.+?)\s*$') {
+            $cur.Name = $Matches[1]
+        } elseif ($cur -and $text -match '^\s*Size\s*:\s*([\d,]+)') {
+            $cur.SizeBytes = [long]($Matches[1] -replace ',', '')
+        }
+    }
+    if ($cur) { $images += [pscustomobject]$cur }
+    if ($images.Count -eq 0) { return @() }
+    return ,$images
+}
+
+function Test-ImageIndexAvailable {
+    param([int]$Index, $Available)
+    return ([int[]]@($Available.Index)) -contains $Index
+}
+
+function Get-RequiredScratchBytes {
+    # Peak scratch usage is the mounted image view plus the coexisting
+    # install.wim / install2.wim / install.esd exports: ~1.5x the image's
+    # apparent size, with a 20 GB floor for small/unknown images.
+    param([long]$ImageApparentBytes)
+    $factor = 1.5
+    $floor  = 20GB
+    return [long]([math]::Max([double]$floor, [double]$ImageApparentBytes * $factor))
+}
+
+function Test-SufficientScratch {
+    param([long]$RequiredBytes, [long]$FreeBytes)
+    return [pscustomobject]@{
+        Ok            = ($FreeBytes -ge $RequiredBytes)
+        RequiredBytes = $RequiredBytes
+        FreeBytes     = $FreeBytes
+        RequiredGB    = [math]::Round($RequiredBytes / 1GB, 1)
+        FreeGB        = [math]::Round($FreeBytes / 1GB, 1)
+    }
+}
+
+function Resolve-OscdimgSource {
+    param([bool]$AdkExists, [bool]$BundledExists)
+    if ($AdkExists)     { return 'adk' }
+    if ($BundledExists) { return 'bundled' }
+    return 'download'
+}
+
 Start-Transcript -Path "$PSScriptRoot\tiny11.log"
 # Ask the user for input
 Write-Host "Welcome to tiny11 core builder! BETA 09-05-25"

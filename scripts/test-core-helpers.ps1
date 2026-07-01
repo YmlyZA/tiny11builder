@@ -128,6 +128,46 @@ Check 'base excludes Calculator'     (-not ($base -match 'WindowsCalculator'))
 Check 'base excludes Notepad'        (-not ($base -match 'WindowsNotepad'))
 Check 'base excludes Photos'         (-not ($base -match 'Windows\.Photos'))
 
+Write-Host '== Get-AvailableImageIndex =='
+$single = @(
+    'Details for image : X', '',
+    'Index : 1',
+    'Name : Windows 11 IoT Enterprise LTSC Evaluation',
+    'Description : Windows 11 IoT Enterprise LTSC Evaluation',
+    'Size : 19,529,686,632 bytes'
+)
+$a = Get-AvailableImageIndex $single
+Check 'single: one image'   ($a.Count -eq 1)
+Check 'single: index 1'     ($a[0].Index -eq 1)
+Check 'single: name parsed' ($a[0].Name -eq 'Windows 11 IoT Enterprise LTSC Evaluation')
+Check 'single: size parsed' ($a[0].SizeBytes -eq 19529686632)
+$multi = @(
+    'Index : 1', 'Name : Windows 11 Home', 'Size : 15,000,000,000 bytes',
+    'Index : 3', 'Name : Windows 11 Pro',  'Size : 16,500,000,000 bytes'
+)
+$m = Get-AvailableImageIndex $multi
+Check 'multi: two images'  ($m.Count -eq 2)
+Check 'multi: indices 1,3' (($m.Index -join ',') -eq '1,3')
+Check 'multi: pro size'    ((($m | Where-Object Index -eq 3).SizeBytes) -eq 16500000000)
+Check 'empty input empty'  (@(Get-AvailableImageIndex @()).Count -eq 0)
+
+Write-Host '== Test-ImageIndexAvailable =='
+Check 'index present' (Test-ImageIndexAvailable 3 $m)
+Check 'index absent'  (-not (Test-ImageIndexAvailable 2 $m))
+
+Write-Host '== Get-RequiredScratchBytes =='
+Check 'floor applies (small image)'  ((Get-RequiredScratchBytes 1GB) -eq 20GB)
+Check 'factor applies (large image)' ((Get-RequiredScratchBytes 19529686632) -eq [long](19529686632 * 1.5))
+
+Write-Host '== Test-SufficientScratch =='
+Check 'enough space ok'   ((Test-SufficientScratch 20GB 30GB).Ok)
+Check 'short space not ok' (-not (Test-SufficientScratch 30GB 20GB).Ok)
+
+Write-Host '== Resolve-OscdimgSource =='
+Check 'adk preferred'  ((Resolve-OscdimgSource $true  $true)  -eq 'adk')
+Check 'bundled second' ((Resolve-OscdimgSource $false $true)  -eq 'bundled')
+Check 'download last'  ((Resolve-OscdimgSource $false $false) -eq 'download')
+
 Write-Host '== maker parity: Resolve-BuildProfile =='
 $makerPath = Join-Path $repo 'tiny11maker.ps1'
 $mtk = $null; $mer = $null

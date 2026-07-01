@@ -129,6 +129,30 @@ are **kept**; `Paint`, `Camera`, `SoundRecorder`, `StickyNotes`, `Clock`, `Media
 
 ---
 
+---
+
+## Speed & testing flags
+
+Both `tiny11maker.ps1` and `tiny11Coremaker.ps1` accept:
+
+- **`-DryRun`** — validate inputs and print the build plan (what will be removed/kept, the
+  ordered steps) in seconds, without copying or mounting anything. Use it to check
+  `-ISO`/`-SCRATCH`/`-Index` and (Core) `-Keep`/`-Remove` before a real build.
+- **`-Compress recovery|fast|none`** — image compression. `recovery` (default) is smallest and
+  slowest (current behavior); `fast` and `none` trade size for a much faster build.
+- **`-Fast`** — preset: `fast` compression + skip component cleanup (`/ResetBase`). Keeps the full
+  image edits (Core still rebuilds WinSxS and runs the integrity gate), so a `-Fast` build is a
+  genuine, bootable image produced in a fraction of the time. An explicit `-Compress` overrides it.
+
+Tip: builds are I/O-bound. Point **`-SCRATCH`** at an SSD or a manually-created RAMDisk to speed
+the copy/delete/mount steps. (No RAMDisk is created for you — Windows has no built-in one.)
+
+Example fast unattended Core build, keeping Paint:
+
+```powershell
+.\tiny11Coremaker.ps1 -ISO E -SCRATCH D -Index 1 -Fast -Keep Paint -Yes
+```
+
 ## Known issues:
 - Although Edge is removed, there are some remnants in the Settings, but the app in itself is deleted. 
 - You might have to update Winget before being able to install any apps, using Microsoft Store.

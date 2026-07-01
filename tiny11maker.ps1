@@ -30,7 +30,12 @@
 #---------[ Parameters ]---------#
 param (
     [ValidatePattern('^[c-zC-Z]$')][string]$ISO,
-    [ValidatePattern('^[c-zC-Z]$')][string]$SCRATCH
+    [ValidatePattern('^[c-zC-Z]$')][string]$SCRATCH,
+    [int]$Index,
+    [switch]$Yes,
+    [switch]$DryRun,
+    [ValidateSet('recovery', 'fast', 'none')][string]$Compress,
+    [switch]$Fast
 )
 
 if (-not $SCRATCH) {
@@ -70,6 +75,40 @@ function Remove-RegistryValue {
 	}
 }
 
+function Resolve-BuildProfile {
+    # Resolve effective image-compression settings from -Compress and -Fast.
+    # Default 'recovery' (current behavior). -Fast implies 'fast' unless -Compress is
+    # explicit. SkipCleanup is set by -Fast. (maker exports a single WIM, so the
+    # export uses Compress directly; UseEsd/WimExportCompress are provided for parity.)
+    param([string]$Compress, [switch]$Fast)
+    $valid = 'recovery', 'fast', 'none'
+    if ($Compress -and ($valid -notcontains $Compress)) {
+        throw "Invalid -Compress '$Compress'. Valid values: $($valid -join ', ')"
+    }
+    $effective = if ($Compress) { $Compress } elseif ($Fast) { 'fast' } else { 'recovery' }
+    [pscustomobject]@{
+        Compress          = $effective
+        SkipCleanup       = [bool]$Fast
+        UseEsd            = ($effective -eq 'recovery')
+        WimExportCompress = if ($effective -eq 'recovery') { 'max' } else { $effective }
+    }
+}
+
+function Test-RobocopySucceeded {
+    param([int]$ExitCode)
+    return ($ExitCode -lt 8)
+}
+
+function Invoke-Robocopy {
+    param([Parameter(Mandatory = $true)][string]$Source,
+          [Parameter(Mandatory = $true)][string]$Destination)
+    & robocopy.exe $Source $Destination '/E' '/MT' '/R:3' '/W:3' '/NFL' '/NDL' '/NJH' '/NJS' '/NP' | Out-Null
+    if (-not (Test-RobocopySucceeded $LASTEXITCODE)) {
+        throw "robocopy failed (exit code $LASTEXITCODE) copying '$Source' -> '$Destination'."
+    }
+    $global:LASTEXITCODE = 0
+}
+
 #---------[ Execution ]---------#
 # Check if PowerShell execution is restricted
 if ((Get-ExecutionPolicy) -eq 'Restricted') {
@@ -96,16 +135,34 @@ if (! $myWindowsPrincipal.IsInRole($adminRole))
     # Use -File so paths with spaces survive, and forward the parameters the
     # user supplied so the elevated instance doesn't fall back to prompting.
     $argList = "-File `"$($myInvocation.MyCommand.Definition)`""
-    if ($ISO)     { $argList += " -ISO $ISO" }
-    if ($SCRATCH) { $argList += " -SCRATCH $SCRATCH" }
+    if ($ISO)      { $argList += " -ISO $ISO" }
+    if ($SCRATCH)  { $argList += " -SCRATCH $SCRATCH" }
+    if ($Index)    { $argList += " -Index $Index" }
+    if ($Yes)      { $argList += " -Yes" }
+    if ($DryRun)   { $argList += " -DryRun" }
+    if ($Compress) { $argList += " -Compress $Compress" }
+    if ($Fast)     { $argList += " -Fast" }
     $newProcess.Arguments = $argList;
     $newProcess.Verb = "runas";
     [System.Diagnostics.Process]::Start($newProcess);
     exit
 }
 
-if (-not (Test-Path -Path "$PSScriptRoot/autounattend.xml")) {
-    Invoke-RestMethod "https://raw.githubusercontent.com/ntdevlabs/tiny11builder/refs/heads/main/autounattend.xml" -OutFile "$PSScriptRoot/autounattend.xml"
+# Resolve the compression/cleanup profile now that the helper functions are defined
+# (Functions block above) and the parameters are bound.
+$buildProfile = Resolve-BuildProfile -Compress $Compress -Fast:$Fast
+Write-Verbose "Build profile: Compress=$($buildProfile.Compress) SkipCleanup=$($buildProfile.SkipCleanup) UseEsd=$($buildProfile.UseEsd)"
+
+# Unattended runs cannot prompt: -Yes requires the drive letter and image index up front.
+if ($Yes) {
+    if (-not $ISO)   { throw "-Yes requires -ISO (no interactive prompt available)." }
+    if (-not $Index) { throw "-Yes requires -Index (no interactive prompt available)." }
+}
+
+if (-not $DryRun) {
+    if (-not (Test-Path -Path "$PSScriptRoot/autounattend.xml")) {
+        Invoke-RestMethod "https://raw.githubusercontent.com/ntdevlabs/tiny11builder/refs/heads/main/autounattend.xml" -OutFile "$PSScriptRoot/autounattend.xml"
+    }
 }
 
 # Start the transcript and prepare the window
@@ -116,7 +173,7 @@ Clear-Host
 Write-Output "Welcome to the tiny11 image creator! Release: 09-07-25"
 
 $hostArchitecture = $Env:PROCESSOR_ARCHITECTURE
-New-Item -ItemType Directory -Force -Path "$ScratchDisk\tiny11\sources" | Out-Null
+if (-not $DryRun) { New-Item -ItemType Directory -Force -Path "$ScratchDisk\tiny11\sources" | Out-Null }
 do {
     if (-not $ISO) {
         $DriveLetter = Read-Host "Please enter the drive letter for the Windows 11 image"
@@ -135,14 +192,28 @@ if (-not (Test-Path "$DriveLetter\")) {
     throw "Image drive '$DriveLetter' was not found. Mount the Windows 11 ISO and pass its drive letter via -ISO (or at the prompt)."
 }
 
+if ($DryRun) {
+    Write-Output ""
+    Write-Output "===== DRY RUN (no copy / no mount performed) ====="
+    Write-Output "  Image drive (-ISO)    : $DriveLetter"
+    Write-Output "  Scratch (-SCRATCH)    : $ScratchDisk"
+    Write-Output ("  Image index (-Index)  : {0}" -f $(if ($Index) { $Index } else { '(prompt at build time)' }))
+    Write-Output "  Compression           : $($buildProfile.Compress)"
+    Write-Output "  Skip component cleanup: $($buildProfile.SkipCleanup)"
+    Write-Output "  Planned steps: copy image -> mount install.wim -> remove provisioned Appx -> remove Edge/OneDrive -> registry tweaks -> $(if ($buildProfile.SkipCleanup) { 'skip cleanup' } else { 'component cleanup' }) -> unmount/commit -> export ($($buildProfile.Compress)) -> bypass boot.wim -> create ISO"
+    Write-Output "===== END DRY RUN ====="
+    Stop-Transcript
+    exit 0
+}
+
 if ((Test-Path "$DriveLetter\sources\boot.wim") -eq $false -or (Test-Path "$DriveLetter\sources\install.wim") -eq $false) {
     if ((Test-Path "$DriveLetter\sources\install.esd") -eq $true) {
         Write-Output "Found install.esd, converting to install.wim..."
         Get-WindowsImage -ImagePath $DriveLetter\sources\install.esd
-        $index = Read-Host "Please enter the image index"
+        if ($Index) { $imageIndex = $Index } else { $imageIndex = Read-Host "Please enter the image index" }
         Write-Output ' '
         Write-Output 'Converting install.esd to install.wim. This may take a while...'
-        Export-WindowsImage -SourceImagePath $DriveLetter\sources\install.esd -SourceIndex $index -DestinationImagePath $ScratchDisk\tiny11\sources\install.wim -Compressiontype Maximum -CheckIntegrity
+        Export-WindowsImage -SourceImagePath $DriveLetter\sources\install.esd -SourceIndex $imageIndex -DestinationImagePath $ScratchDisk\tiny11\sources\install.wim -Compressiontype Maximum -CheckIntegrity
     } else {
         Write-Output "Can't find Windows OS Installation files in the specified Drive Letter.."
         Write-Output "Please enter the correct DVD Drive Letter.."
@@ -151,7 +222,7 @@ if ((Test-Path "$DriveLetter\sources\boot.wim") -eq $false -or (Test-Path "$Driv
 }
 
 Write-Output "Copying Windows image..."
-Copy-Item -Path "$DriveLetter\*" -Destination "$ScratchDisk\tiny11" -Recurse -Force | Out-Null
+Invoke-Robocopy -Source "$DriveLetter\" -Destination "$ScratchDisk\tiny11"
 Set-ItemProperty -Path "$ScratchDisk\tiny11\sources\install.esd" -Name IsReadOnly -Value $false > $null 2>&1
 Remove-Item "$ScratchDisk\tiny11\sources\install.esd" > $null 2>&1
 Write-Output "Copy complete!"
@@ -159,9 +230,11 @@ Start-Sleep -Seconds 2
 Clear-Host
 Write-Output "Getting image information:"
 $ImagesIndex = (Get-WindowsImage -ImagePath $ScratchDisk\tiny11\sources\install.wim).ImageIndex
-while ($ImagesIndex -notcontains $index) {
+if ($Index) { $imageIndex = $Index }
+while ($ImagesIndex -notcontains $imageIndex) {
+    if ($Yes) { throw "Image index '$imageIndex' not found in install.wim; pass a valid -Index for unattended runs." }
     Get-WindowsImage -ImagePath $ScratchDisk\tiny11\sources\install.wim
-    $index = Read-Host "Please enter the image index"
+    $imageIndex = Read-Host "Please enter the image index"
 }
 Write-Output "Mounting Windows image. This may take a while."
 $wimFilePath = "$ScratchDisk\tiny11\sources\install.wim"
@@ -183,7 +256,7 @@ if (Test-Path "$ScratchDisk\scratchdir\Windows") {
 }
 Remove-Item -Path "$ScratchDisk\scratchdir" -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path "$ScratchDisk\scratchdir" > $null
-Mount-WindowsImage -ImagePath $ScratchDisk\tiny11\sources\install.wim -Index $index -Path $ScratchDisk\scratchdir
+Mount-WindowsImage -ImagePath $ScratchDisk\tiny11\sources\install.wim -Index $imageIndex -Path $ScratchDisk\scratchdir
 
 $imageIntl = & dism /English /Get-Intl "/Image:$($ScratchDisk)\scratchdir"
 $languageLine = $imageIntl -split '\n' | Where-Object { $_ -match 'Default system UI language : ([a-zA-Z]{2}-[a-zA-Z]{2})' }
@@ -195,7 +268,7 @@ if ($languageLine) {
     Write-Output "Default system UI language code not found."
 }
 
-$imageInfo = & 'dism' '/English' '/Get-WimInfo' "/wimFile:$($ScratchDisk)\tiny11\sources\install.wim" "/index:$index"
+$imageInfo = & 'dism' '/English' '/Get-WimInfo' "/wimFile:$($ScratchDisk)\tiny11\sources\install.wim" "/index:$imageIndex"
 $lines = $imageInfo -split '\r?\n'
 
 foreach ($line in $lines) {
@@ -407,14 +480,18 @@ reg unload HKLM\zDEFAULT | Out-Null
 reg unload HKLM\zNTUSER | Out-Null
 reg unload HKLM\zSOFTWARE | Out-Null
 reg unload HKLM\zSYSTEM | Out-Null
-Write-Output "Cleaning up image..."
-dism.exe /Image:$ScratchDisk\scratchdir /Cleanup-Image /StartComponentCleanup /ResetBase
-Write-Output "Cleanup complete."
+if ($buildProfile.SkipCleanup) {
+    Write-Output "Skipping component cleanup (-Fast)."
+} else {
+    Write-Output "Cleaning up image..."
+    dism.exe /Image:$ScratchDisk\scratchdir /Cleanup-Image /StartComponentCleanup /ResetBase
+    Write-Output "Cleanup complete."
+}
 Write-Output ' '
 Write-Output "Unmounting image..."
 Dismount-WindowsImage -Path $ScratchDisk\scratchdir -Save
-Write-Host "Exporting image..."
-Dism.exe /Export-Image /SourceImageFile:"$ScratchDisk\tiny11\sources\install.wim" /SourceIndex:$index /DestinationImageFile:"$ScratchDisk\tiny11\sources\install2.wim" /Compress:recovery
+Write-Host "Exporting image (compress: $($buildProfile.Compress))..."
+Dism.exe /Export-Image /SourceImageFile:"$ScratchDisk\tiny11\sources\install.wim" /SourceIndex:$imageIndex /DestinationImageFile:"$ScratchDisk\tiny11\sources\install2.wim" /Compress:$($buildProfile.Compress)
 Remove-Item -Path "$ScratchDisk\tiny11\sources\install.wim" -Force | Out-Null
 Rename-Item -Path "$ScratchDisk\tiny11\sources\install2.wim" -NewName "install.wim" | Out-Null
 Write-Output "Windows image completed. Continuing with boot.wim."
@@ -490,8 +567,8 @@ if ([System.IO.Directory]::Exists($ADKDepTools)) {
 & "$OSCDIMG" '-m' '-o' '-u2' '-udfver102' "-bootdata:2#p0,e,b$ScratchDisk\tiny11\boot\etfsboot.com#pEF,e,b$ScratchDisk\tiny11\efi\microsoft\boot\efisys.bin" "$ScratchDisk\tiny11" "$PSScriptRoot\tiny11.iso"
 
 # Finishing up
-Write-Output "Creation completed! Press any key to exit the script..."
-Read-Host "Press Enter to continue"
+Write-Output "Creation completed!"
+if (-not $Yes) { Read-Host "Press Enter to continue" }
 Write-Output "Performing Cleanup..."
 Remove-Item -Path "$ScratchDisk\tiny11" -Recurse -Force | Out-Null
 Remove-Item -Path "$ScratchDisk\scratchdir" -Recurse -Force | Out-Null

@@ -33,7 +33,10 @@ param(
     [switch]$EnableNet35,
     [string[]]$Keep = @(),
     [string[]]$Remove = @(),
-    [switch]$Yes
+    [switch]$Yes,
+    [switch]$DryRun,
+    [ValidateSet('recovery', 'fast', 'none')][string]$Compress,
+    [switch]$Fast
 )
 
 # Normalize comma-separated values so -Keep "Paint,Camera" (one quoted token)
@@ -71,6 +74,9 @@ if (! $myWindowsPrincipal.IsInRole($adminRole))
     if ($Keep)       { $argList += " -Keep $($Keep -join ',')" }
     if ($Remove)     { $argList += " -Remove $($Remove -join ',')" }
     if ($Yes)        { $argList += " -Yes" }
+    if ($DryRun)     { $argList += " -DryRun" }
+    if ($Compress)   { $argList += " -Compress $Compress" }
+    if ($Fast)       { $argList += " -Fast" }
     $newProcess.Arguments = $argList;
     $newProcess.Verb = "runas";
     [System.Diagnostics.Process]::Start($newProcess);
@@ -194,6 +200,87 @@ function Assert-WinSxSRebuild {
     }
 }
 
+function Resolve-BuildProfile {
+    # Resolve the effective image-compression settings from -Compress and -Fast.
+    # Default is 'recovery' (current behavior). -Fast implies 'fast' unless -Compress
+    # is given explicitly. WimExportCompress is the value for the intermediate WIM
+    # re-export ('max' for the recovery profile, else the effective value); UseEsd is
+    # true only for 'recovery' (the final ESD conversion stage).
+    param([string]$Compress, [switch]$Fast)
+    $valid = 'recovery', 'fast', 'none'
+    if ($Compress -and ($valid -notcontains $Compress)) {
+        throw "Invalid -Compress '$Compress'. Valid values: $($valid -join ', ')"
+    }
+    $effective = if ($Compress) { $Compress } elseif ($Fast) { 'fast' } else { 'recovery' }
+    [pscustomobject]@{
+        Compress          = $effective
+        SkipCleanup       = [bool]$Fast
+        UseEsd            = ($effective -eq 'recovery')
+        WimExportCompress = if ($effective -eq 'recovery') { 'max' } else { $effective }
+    }
+}
+
+function Test-RobocopySucceeded {
+    # robocopy uses exit codes 0-7 for success (files copied, extras, etc.) and
+    # >=8 for genuine failures.
+    param([int]$ExitCode)
+    return ($ExitCode -lt 8)
+}
+
+function Invoke-Robocopy {
+    # Multithreaded recursive copy. robocopy is a built-in Microsoft tool and is far
+    # faster than Copy-Item for the ~6 GB ISO copy. Throws on a real failure; resets
+    # $LASTEXITCODE to 0 on success so downstream exit-code checks are not confused.
+    param([Parameter(Mandatory = $true)][string]$Source,
+          [Parameter(Mandatory = $true)][string]$Destination)
+    & robocopy.exe $Source $Destination '/E' '/MT' '/R:3' '/W:3' '/NFL' '/NDL' '/NJH' '/NJS' '/NP' | Out-Null
+    if (-not (Test-RobocopySucceeded $LASTEXITCODE)) {
+        throw "robocopy failed (exit code $LASTEXITCODE) copying '$Source' -> '$Destination'."
+    }
+    $global:LASTEXITCODE = 0
+}
+
+function Get-AlwaysRemovePackages {
+    # Always-remove provisioned-Appx prefixes (bloat). The optional standalone
+    # utilities are handled separately via Get-OptionalUtilities / the picker /
+    # -Keep / -Remove, so none of them appear here.
+    @(
+        'Clipchamp.Clipchamp_',
+        'Microsoft.BingNews_',
+        'Microsoft.BingSearch_',
+        'Microsoft.BingWeather_',
+        'Microsoft.GamingApp_',
+        'Microsoft.GetHelp_',
+        'Microsoft.Getstarted_',
+        'Microsoft.MicrosoftOfficeHub_',
+        'Microsoft.MicrosoftSolitaireCollection_',
+        'Microsoft.People_',
+        'Microsoft.PowerAutomateDesktop_',
+        'Microsoft.Todos_',
+        'microsoft.windowscommunicationsapps_',
+        'Microsoft.WindowsFeedbackHub_',
+        'Microsoft.WindowsMaps_',
+        'Microsoft.Xbox.TCUI_',
+        'Microsoft.XboxGamingOverlay_',
+        'Microsoft.XboxGameOverlay_',
+        'Microsoft.XboxSpeechToTextOverlay_',
+        'Microsoft.XboxIdentityProvider_',
+        'Microsoft.YourPhone_',
+        'MicrosoftCorporationII.MicrosoftFamily_',
+        'MicrosoftCorporationII.QuickAssist_',
+        'MicrosoftTeams_',
+        'MSTeams_',
+        'Microsoft.Windows.Teams_',
+        'Microsoft.549981C3F5F10_',
+        'Microsoft.Copilot_',
+        'Microsoft.Windows.Copilot',
+        'Microsoft.Windows.DevHome_',
+        'Microsoft.Windows.CrossDevice_',
+        'Microsoft.OutlookForWindows_',
+        'MicrosoftWindows.Client.WebExperience_'
+    )
+}
+
 Start-Transcript -Path "$PSScriptRoot\tiny11.log"
 # Ask the user for input
 Write-Host "Welcome to tiny11 core builder! BETA 09-05-25"
@@ -224,22 +311,48 @@ if ($Yes) {
 # alias of $mainOSDrive so the registry/oscdimg sections that reference it
 # resolve to a real, absolute path instead of an empty string.
 $ScratchDisk = $mainOSDrive
+$buildProfile = Resolve-BuildProfile -Compress $Compress -Fast:$Fast
+Write-Verbose "Build profile: Compress=$($buildProfile.Compress) SkipCleanup=$($buildProfile.SkipCleanup) UseEsd=$($buildProfile.UseEsd)"
 $hostArchitecture = $Env:PROCESSOR_ARCHITECTURE
 
 # Ensure the unattend answer file exists locally; it is injected into Sysprep later
 # for the OOBE / local-account bypass. The Core script used to assume it was already
 # present and would throw "Cannot find path ...autounattend.xml" when run standalone.
-if (-not (Test-Path -Path "$PSScriptRoot\autounattend.xml")) {
-    Write-Host "autounattend.xml not found locally, downloading..."
-    Invoke-RestMethod "https://raw.githubusercontent.com/ntdevlabs/tiny11builder/refs/heads/main/autounattend.xml" -OutFile "$PSScriptRoot\autounattend.xml"
+# A dry run neither copies nor mounts, so skip these side effects (network + dir).
+if (-not $DryRun) {
+    if (-not (Test-Path -Path "$PSScriptRoot\autounattend.xml")) {
+        Write-Host "autounattend.xml not found locally, downloading..."
+        Invoke-RestMethod "https://raw.githubusercontent.com/ntdevlabs/tiny11builder/refs/heads/main/autounattend.xml" -OutFile "$PSScriptRoot\autounattend.xml"
+    }
+    New-Item -ItemType Directory -Force -Path "$mainOSDrive\tiny11\sources" > $null
 }
-New-Item -ItemType Directory -Force -Path "$mainOSDrive\tiny11\sources" > $null
 if ($ISO) { $DriveLetter = $ISO } else {
     $DriveLetter = Read-Host "Please enter the drive letter for the Windows 11 image"
 }
 $DriveLetter = $DriveLetter + ":"
 if (-not (Test-Path "$DriveLetter\")) {
     throw "Image drive '$DriveLetter' was not found. Mount the Windows 11 ISO and pass its drive letter via -ISO (or at the prompt)."
+}
+
+if ($DryRun) {
+    $drOpt = Resolve-OptionalUtilities -Keep $Keep -Remove $Remove
+    $drBase = Get-AlwaysRemovePackages
+    Write-Host ""
+    Write-Host "===== DRY RUN (no copy / no mount performed) ====="
+    Write-Host "  Image drive (-ISO)   : $DriveLetter"
+    Write-Host "  Scratch (-SCRATCH)   : $mainOSDrive"
+    Write-Host ("  Image index (-Index) : {0}" -f $(if ($Index) { $Index } else { '(prompt at build time)' }))
+    Write-Host "  Compression          : $($buildProfile.Compress)  (ESD: $($buildProfile.UseEsd))"
+    Write-Host "  Skip component cleanup: $($buildProfile.SkipCleanup)"
+    Write-Host "  Enable .NET 3.5      : $([bool]$EnableNet35)"
+    Write-Host "  Optional utilities KEPT   : $($drOpt.KeptNames -join ', ')"
+    Write-Host "  Optional utilities REMOVED: $($drOpt.RemovePrefixes -join ', ')"
+    Write-Host "  Always-remove Appx packages ($($drBase.Count)):"
+    $drBase | ForEach-Object { Write-Host "    - $_" }
+    Write-Host "  Planned steps: copy image -> mount install.wim -> remove Appx -> remove system packages -> (optional .NET) -> remove Edge/OneDrive/WinRE -> rebuild WinSxS -> registry tweaks -> $(if ($buildProfile.SkipCleanup) { 'skip cleanup' } else { 'component cleanup' }) -> unmount/commit -> export ($($buildProfile.Compress)) -> bypass boot.wim -> create ISO"
+    Write-Host "===== END DRY RUN ====="
+    Stop-Transcript
+    exit 0
 }
 
 # Everything from here on touches a mounted image and/or loaded offline hives.
@@ -262,7 +375,7 @@ if ((Test-Path "$DriveLetter\sources\boot.wim") -eq $false -or (Test-Path "$Driv
 }
 
 Write-Host "Copying Windows image..."
-Copy-Item -Path "$DriveLetter\*" -Destination "$mainOSDrive\tiny11" -Recurse -Force > $null
+Invoke-Robocopy -Source "$DriveLetter\" -Destination "$mainOSDrive\tiny11"
 Set-ItemProperty -Path "$mainOSDrive\tiny11\sources\install.esd" -Name IsReadOnly -Value $false > $null 2>&1
 Remove-Item "$mainOSDrive\tiny11\sources\install.esd" > $null 2>&1
 Write-Host "Copy complete!"
@@ -331,45 +444,9 @@ $packages = & 'dism' '/English' "/image:$mainOSDrive\scratchdir" '/Get-Provision
             $matches[1]
         }
     }
-# Always-remove bloat. The 12 optional standalone utilities (Terminal, Calculator,
-# Notepad, Photos, Paint, Camera, SoundRecorder, StickyNotes, Clock, MediaPlayer,
-# MoviesTV, SnippingTool) are handled separately in the next block via
-# Get-OptionalUtilities / the picker / -Keep / -Remove, so they must NOT appear here.
-$packagePrefixes = @(
-    'Clipchamp.Clipchamp_',
-    'Microsoft.BingNews_',
-    'Microsoft.BingSearch_',
-    'Microsoft.BingWeather_',
-    'Microsoft.GamingApp_',
-    'Microsoft.GetHelp_',
-    'Microsoft.Getstarted_',
-    'Microsoft.MicrosoftOfficeHub_',
-    'Microsoft.MicrosoftSolitaireCollection_',
-    'Microsoft.People_',
-    'Microsoft.PowerAutomateDesktop_',
-    'Microsoft.Todos_',
-    'microsoft.windowscommunicationsapps_',
-    'Microsoft.WindowsFeedbackHub_',
-    'Microsoft.WindowsMaps_',
-    'Microsoft.Xbox.TCUI_',
-    'Microsoft.XboxGamingOverlay_',
-    'Microsoft.XboxGameOverlay_',
-    'Microsoft.XboxSpeechToTextOverlay_',
-    'Microsoft.XboxIdentityProvider_',
-    'Microsoft.YourPhone_',
-    'MicrosoftCorporationII.MicrosoftFamily_',
-    'MicrosoftCorporationII.QuickAssist_',
-    'MicrosoftTeams_',
-    'MSTeams_',
-    'Microsoft.Windows.Teams_',
-    'Microsoft.549981C3F5F10_',
-    'Microsoft.Copilot_',
-    'Microsoft.Windows.Copilot',
-    'Microsoft.Windows.DevHome_',
-    'Microsoft.Windows.CrossDevice_',
-    'Microsoft.OutlookForWindows_',
-    'MicrosoftWindows.Client.WebExperience_'
-)
+# Always-remove bloat comes from Get-AlwaysRemovePackages (single source of truth,
+# also used by -DryRun). Optional utilities are merged in by the picker block below.
+$packagePrefixes = Get-AlwaysRemovePackages
 if ($Yes) {
     $picked = Resolve-OptionalUtilities -Keep $Keep -Remove $Remove
 } else {
@@ -757,14 +834,18 @@ foreach ($path in $servicePaths) {
 Write-Host "Tweaking complete!"
 Write-Host "Unmounting Registry..."
 Remove-OfflineHives
-Write-Host "Cleaning up image..."
-& 'dism' '/English' "/image:$mainOSDrive\scratchdir" '/Cleanup-Image' '/StartComponentCleanup' '/ResetBase' > $null
-Write-Host "Cleanup complete."
+if ($buildProfile.SkipCleanup) {
+    Write-Host "Skipping component cleanup (-Fast)."
+} else {
+    Write-Host "Cleaning up image..."
+    & 'dism' '/English' "/image:$mainOSDrive\scratchdir" '/Cleanup-Image' '/StartComponentCleanup' '/ResetBase' > $null
+    Write-Host "Cleanup complete."
+}
 Write-Host ' '
 Write-Host "Unmounting image..."
 Invoke-Dism '/English' '/unmount-image' "/mountdir:$mainOSDrive\scratchdir" '/commit'
-Write-Host "Exporting image..."
-Invoke-Dism '/English' '/Export-Image' "/SourceImageFile:$mainOSDrive\tiny11\sources\install.wim" "/SourceIndex:$imageIndex" "/DestinationImageFile:$mainOSDrive\tiny11\sources\install2.wim" '/compress:max'
+Write-Host "Exporting image (compress: $($buildProfile.WimExportCompress))..."
+Invoke-Dism '/English' '/Export-Image' "/SourceImageFile:$mainOSDrive\tiny11\sources\install.wim" "/SourceIndex:$imageIndex" "/DestinationImageFile:$mainOSDrive\tiny11\sources\install2.wim" "/compress:$($buildProfile.WimExportCompress)"
 Remove-Item -Path "$mainOSDrive\tiny11\sources\install.wim" -Force > $null
 Rename-Item -Path "$mainOSDrive\tiny11\sources\install2.wim" -NewName "install.wim" > $null
 Write-Host "Windows image completed. Continuing with boot.wim."
@@ -800,9 +881,13 @@ Remove-OfflineHives
 Write-Host "Unmounting image..."
 Invoke-Dism '/English' '/unmount-image' "/mountdir:$mainOSDrive\scratchdir" '/commit'
 Clear-Host
-Write-Host "Exporting ESD. This may take a while..."
-Invoke-Dism /Export-Image /SourceImageFile:"$mainOSDrive\tiny11\sources\install.wim" /SourceIndex:1 /DestinationImageFile:"$mainOSDrive\tiny11\sources\install.esd" /Compress:recovery
-Remove-Item "$mainOSDrive\tiny11\sources\install.wim" > $null 2>&1
+if ($buildProfile.UseEsd) {
+    Write-Host "Exporting ESD. This may take a while..."
+    Invoke-Dism /Export-Image /SourceImageFile:"$mainOSDrive\tiny11\sources\install.wim" /SourceIndex:1 /DestinationImageFile:"$mainOSDrive\tiny11\sources\install.esd" /Compress:recovery
+    Remove-Item "$mainOSDrive\tiny11\sources\install.wim" > $null 2>&1
+} else {
+    Write-Host "Keeping install.wim (compress: $($buildProfile.Compress)); skipping ESD conversion."
+}
 Write-Host "The tiny11 image is now completed. Proceeding with the making of the ISO..."
 Write-Host "Creating ISO image..."
 $ADKDepTools = "C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\$hostarchitecture\Oscdimg"

@@ -87,6 +87,59 @@ CheckThrows 'missing path throws' { Assert-WinSxSRebuild -Path (Join-Path $tmp '
 
 Remove-Item $tmp, $noStack, $noMeta -Recurse -Force -ErrorAction SilentlyContinue
 
+Write-Host '== Resolve-BuildProfile =='
+$p = Resolve-BuildProfile
+Check 'default compress recovery'      ($p.Compress -eq 'recovery')
+Check 'default does not skip cleanup'  ($p.SkipCleanup -eq $false)
+Check 'default uses esd'               ($p.UseEsd -eq $true)
+Check 'default wim export max'         ($p.WimExportCompress -eq 'max')
+$p = Resolve-BuildProfile -Fast
+Check '-Fast compress fast'            ($p.Compress -eq 'fast')
+Check '-Fast skips cleanup'            ($p.SkipCleanup -eq $true)
+Check '-Fast no esd'                   ($p.UseEsd -eq $false)
+Check '-Fast wim export fast'          ($p.WimExportCompress -eq 'fast')
+$p = Resolve-BuildProfile -Compress 'none'
+Check '-Compress none'                 ($p.Compress -eq 'none')
+Check '-Compress none no esd'          ($p.UseEsd -eq $false)
+Check '-Compress none not skipclean'   ($p.SkipCleanup -eq $false)
+Check '-Compress none wim export none' ($p.WimExportCompress -eq 'none')
+$p = Resolve-BuildProfile -Compress 'none' -Fast
+Check 'explicit compress overrides Fast' ($p.Compress -eq 'none')
+Check 'Fast still skips cleanup w/ explicit compress' ($p.SkipCleanup -eq $true)
+Check '-Compress none -Fast wim export none' ($p.WimExportCompress -eq 'none')
+$p = Resolve-BuildProfile -Compress 'fast'
+Check '-Compress fast direct'          ($p.Compress -eq 'fast')
+Check '-Compress fast wim export fast' ($p.WimExportCompress -eq 'fast')
+Check '-Compress fast no esd'          ($p.UseEsd -eq $false)
+CheckThrows 'invalid compress throws'  { Resolve-BuildProfile -Compress 'zip' }
+
+Write-Host '== Test-RobocopySucceeded =='
+Check 'rc 0 success'  (Test-RobocopySucceeded 0)
+Check 'rc 1 success'  (Test-RobocopySucceeded 1)
+Check 'rc 7 success'  (Test-RobocopySucceeded 7)
+Check 'rc 8 failure'  (-not (Test-RobocopySucceeded 8))
+Check 'rc 16 failure' (-not (Test-RobocopySucceeded 16))
+
+Write-Host '== Get-AlwaysRemovePackages =='
+$base = Get-AlwaysRemovePackages
+Check 'base list non-empty'          ($base.Count -gt 0)
+Check 'base excludes Terminal'       (-not ($base -match 'WindowsTerminal'))
+Check 'base excludes Calculator'     (-not ($base -match 'WindowsCalculator'))
+Check 'base excludes Notepad'        (-not ($base -match 'WindowsNotepad'))
+Check 'base excludes Photos'         (-not ($base -match 'Windows\.Photos'))
+
+Write-Host '== maker parity: Resolve-BuildProfile =='
+$makerPath = Join-Path $repo 'tiny11maker.ps1'
+$mtk = $null; $mer = $null
+$mast = [System.Management.Automation.Language.Parser]::ParseFile($makerPath, [ref]$mtk, [ref]$mer)
+$mast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+    Where-Object { $_.Name -in 'Resolve-BuildProfile', 'Test-RobocopySucceeded' } |
+    ForEach-Object { Invoke-Expression ($_.Extent.Text -replace 'function\s+(\S+)', 'function maker_$1') }
+$mp = maker_Resolve-BuildProfile -Fast
+Check 'maker -Fast compress fast' ($mp.Compress -eq 'fast')
+Check 'maker -Fast skips cleanup' ($mp.SkipCleanup -eq $true)
+Check 'maker rc 8 failure' (-not (maker_Test-RobocopySucceeded 8))
+
 Write-Host ""
 Write-Host "RESULT: $script:pass passed, $script:fail failed"
 if ($script:fail) { exit 1 }

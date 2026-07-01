@@ -168,12 +168,25 @@ Check 'adk preferred'  ((Resolve-OscdimgSource $true  $true)  -eq 'adk')
 Check 'bundled second' ((Resolve-OscdimgSource $false $true)  -eq 'bundled')
 Check 'download last'  ((Resolve-OscdimgSource $false $false) -eq 'download')
 
+Write-Host '== Format-BuildSummary =='
+$bs = Format-BuildSummary -Elapsed (New-TimeSpan -Minutes 27 -Seconds 41) -IsoBytes 4070127616 -IsoPath 'C:\x\tiny11.iso' -AppsRemoved 31 -AppsTotal 33 -Warnings 2
+Check 'summary result line'   ($bs -contains '  Result        : SUCCESS')
+Check 'summary elapsed line'  ($bs -contains '  Elapsed       : 27m 41s')
+Check 'summary iso/size line' ($bs -contains '  Output ISO    : C:\x\tiny11.iso  (3.79 GB)')
+Check 'summary apps line'     ($bs -contains '  Apps removed  : 31 of 33 provisioned Appx')
+Check 'summary warn line'     ($bs -contains '  Warnings      : 2 non-fatal (see log)')
+Check 'summary header'        ($bs -contains '===== BUILD SUMMARY =====')
+$bs0 = Format-BuildSummary -Elapsed (New-TimeSpan -Minutes 5 -Seconds 3) -IsoBytes 2147483648 -IsoPath 'C:\a.iso' -AppsRemoved 0 -AppsTotal 0 -Warnings 0
+Check 'summary warn none'     ($bs0 -contains '  Warnings      : none')
+Check 'summary size 2.00 GB'  ($bs0 -contains '  Output ISO    : C:\a.iso  (2.00 GB)')
+Check 'summary elapsed 5m 3s' ($bs0 -contains '  Elapsed       : 5m 3s')
+
 Write-Host '== maker parity: Resolve-BuildProfile =='
 $makerPath = Join-Path $repo 'tiny11maker.ps1'
 $mtk = $null; $mer = $null
 $mast = [System.Management.Automation.Language.Parser]::ParseFile($makerPath, [ref]$mtk, [ref]$mer)
 $mast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
-    Where-Object { $_.Name -in 'Resolve-BuildProfile', 'Test-RobocopySucceeded', 'Get-AvailableImageIndex', 'Test-ImageIndexAvailable', 'Get-RequiredScratchBytes', 'Test-SufficientScratch', 'Resolve-OscdimgSource' } |
+    Where-Object { $_.Name -in 'Resolve-BuildProfile', 'Test-RobocopySucceeded', 'Get-AvailableImageIndex', 'Test-ImageIndexAvailable', 'Get-RequiredScratchBytes', 'Test-SufficientScratch', 'Resolve-OscdimgSource', 'Format-BuildSummary' } |
     ForEach-Object { Invoke-Expression ($_.Extent.Text -replace 'function\s+(\S+)', 'function maker_$1') }
 $mp = maker_Resolve-BuildProfile -Fast
 Check 'maker -Fast compress fast' ($mp.Compress -eq 'fast')
@@ -187,6 +200,10 @@ Check 'maker index absent'       (-not (maker_Test-ImageIndexAvailable 9 $mAvail
 Check 'maker required floor'     ((maker_Get-RequiredScratchBytes 1GB) -eq 20GB)
 Check 'maker scratch short'      (-not (maker_Test-SufficientScratch 30GB 20GB).Ok)
 Check 'maker oscdimg download'   ((maker_Resolve-OscdimgSource $false $false) -eq 'download')
+$mSummary = maker_Format-BuildSummary -Elapsed (New-TimeSpan -Minutes 1 -Seconds 2) -IsoBytes 1073741824 -IsoPath 'C:\a.iso' -AppsRemoved 5 -AppsTotal 5 -Warnings 0
+Check 'maker summary success'  ($mSummary -contains '  Result        : SUCCESS')
+Check 'maker summary size 1GB' ($mSummary -contains '  Output ISO    : C:\a.iso  (1.00 GB)')
+Check 'maker summary apps 5/5' ($mSummary -contains '  Apps removed  : 5 of 5 provisioned Appx')
 
 Write-Host ""
 Write-Host "RESULT: $script:pass passed, $script:fail failed"

@@ -190,6 +190,20 @@ if (-not (Test-Path "$DriveLetter\")) {
     throw "Image drive '$DriveLetter' was not found. Mount the Windows 11 ISO and pass its drive letter via -ISO (or at the prompt)."
 }
 
+if ($DryRun) {
+    Write-Output ""
+    Write-Output "===== DRY RUN (no copy / no mount performed) ====="
+    Write-Output "  Image drive (-ISO)    : $DriveLetter"
+    Write-Output "  Scratch (-SCRATCH)    : $ScratchDisk"
+    Write-Output ("  Image index (-Index)  : {0}" -f $(if ($Index) { $Index } else { '(prompt at build time)' }))
+    Write-Output "  Compression           : $($buildProfile.Compress)"
+    Write-Output "  Skip component cleanup: $($buildProfile.SkipCleanup)"
+    Write-Output "  Planned steps: copy image -> mount install.wim -> remove provisioned Appx -> remove Edge/OneDrive -> registry tweaks -> $(if ($buildProfile.SkipCleanup) { 'skip cleanup' } else { 'component cleanup' }) -> unmount/commit -> export ($($buildProfile.Compress)) -> bypass boot.wim -> create ISO"
+    Write-Output "===== END DRY RUN ====="
+    Stop-Transcript
+    exit 0
+}
+
 if ((Test-Path "$DriveLetter\sources\boot.wim") -eq $false -or (Test-Path "$DriveLetter\sources\install.wim") -eq $false) {
     if ((Test-Path "$DriveLetter\sources\install.esd") -eq $true) {
         Write-Output "Found install.esd, converting to install.wim..."

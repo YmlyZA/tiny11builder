@@ -153,6 +153,27 @@ Example fast unattended Core build, keeping Paint:
 .\tiny11Coremaker.ps1 -ISO E -SCRATCH D -Index 1 -Fast -Keep Paint -Yes
 ```
 
+### Pre-flight validation
+
+Before copying anything, both scripts now validate:
+
+- **Image index** — if `-Index` names an edition the image does not contain, the
+  run aborts immediately and lists the real editions (e.g. single-edition LTSC/IoT
+  ISOs only have index `1`). Previously this failed cryptically at DISM mount,
+  after the multi-minute copy.
+- **Scratch free space** — the target drive must have roughly 1.5x the image's
+  apparent size free (minimum 20 GB); otherwise the run aborts up front instead of
+  failing partway through the copy or an export.
+- **oscdimg availability** — if neither the Windows ADK nor a bundled `oscdimg.exe`
+  is present, you get a warning up front (the build still tries to download it at
+  the ISO step) rather than discovering it only at the very end.
+
+`-DryRun` runs all three checks against the source ISO (no copy) and **exits 1** if
+any hard check fails, `0` if the plan is clean — so `-DryRun -ISO E -Index 3` tells
+you in seconds whether a real build would succeed:
+
+    .\tiny11Coremaker.ps1 -ISO E -Index 3 -DryRun
+
 ## Known issues:
 - Although Edge is removed, there are some remnants in the Settings, but the app in itself is deleted. 
 - You might have to update Winget before being able to install any apps, using Microsoft Store.

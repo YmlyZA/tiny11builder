@@ -24,7 +24,11 @@ $ignore = @(
     'PSAvoidUsingCmdletAliases',
     'PSUseSingularNouns',
     'PSAvoidTrailingWhitespace',
-    'PSUseApprovedVerbs'
+    'PSUseApprovedVerbs',
+    # New-UnattendXml intentionally takes a username/password and writes a plaintext
+    # password into the generated answer file (throwaway test images) - by design.
+    'PSAvoidUsingUsernameAndPasswordParams',
+    'PSAvoidUsingPlainTextForPassword'
 )
 
 $any = $false

@@ -27,7 +27,6 @@
     Non-interactive: skip confirmation prompts and the utility picker; requires -ISO and -Index.
 #>
 # $Password is intentionally plain-text: it is written verbatim into autounattend.xml for Windows Setup.
-[System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', '')]
 param(
     [ValidatePattern('^[c-zC-Z]$')][string]$ISO,
     [ValidatePattern('^[c-zC-Z]$')][string]$SCRATCH,
@@ -384,8 +383,6 @@ function New-UnattendXml {
     # Tier A (default) skips OOBE to an auto-logged-in local admin; -ZeroTouch adds
     # a disk-0 wipe (clean UEFI layout) for a zero-click install. Arch-aware.
     # Password is intentionally plain-text: Windows Setup autounattend.xml requires it.
-    [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', '')]
-    [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingUsernameAndPasswordParams', '')]
     param(
         [ValidateSet('amd64', 'arm64')][string]$Architecture,
         [string]$UserName,

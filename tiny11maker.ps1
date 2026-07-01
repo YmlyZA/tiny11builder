@@ -46,7 +46,6 @@ if (-not $SCRATCH) {
 if (-not (Test-Path "$ScratchDisk\")) {
     throw "Scratch location '$ScratchDisk' was not found. Pass -SCRATCH with an existing drive letter, or omit it to use the script folder."
 }
-$buildProfile = Resolve-BuildProfile -Compress $Compress -Fast:$Fast
 Write-Verbose "Build profile: Compress=$($buildProfile.Compress) SkipCleanup=$($buildProfile.SkipCleanup) UseEsd=$($buildProfile.UseEsd)"
 
 #---------[ Functions ]---------#
@@ -149,6 +148,10 @@ if (! $myWindowsPrincipal.IsInRole($adminRole))
     [System.Diagnostics.Process]::Start($newProcess);
     exit
 }
+
+# Resolve the compression/cleanup profile now that the helper functions are defined
+# (Functions block above) and the parameters are bound.
+$buildProfile = Resolve-BuildProfile -Compress $Compress -Fast:$Fast
 
 if (-not (Test-Path -Path "$PSScriptRoot/autounattend.xml")) {
     Invoke-RestMethod "https://raw.githubusercontent.com/ntdevlabs/tiny11builder/refs/heads/main/autounattend.xml" -OutFile "$PSScriptRoot/autounattend.xml"

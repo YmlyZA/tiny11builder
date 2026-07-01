@@ -187,6 +187,28 @@ Check 'iso bad exit'     (-not (Test-IsoResult -ExitCode 1 -IsoExists $true  -Is
 Check 'iso missing file' (-not (Test-IsoResult -ExitCode 0 -IsoExists $false -IsoBytes 0))
 Check 'iso empty file'   (-not (Test-IsoResult -ExitCode 0 -IsoExists $true  -IsoBytes 0))
 
+Write-Host '== New-UnattendXml =='
+$uaA = New-UnattendXml -Architecture 'arm64' -UserName 'User' -Password '' -TimeZone 'UTC' -Language 'en-US'
+$okA = $true; try { $null = [xml]$uaA } catch { $okA = $false }
+Check 'tierA well-formed xml' $okA
+Check 'tierA arch arm64'      ($uaA -match 'processorArchitecture="arm64"')
+Check 'tierA index 1'         ($uaA -match '<Value>1</Value>')
+Check 'tierA autologon'       ($uaA -match '<AutoLogon>')
+Check 'tierA user name'       ($uaA -match '<Name>User</Name>')
+Check 'tierA timezone'        ($uaA -match '<TimeZone>UTC</TimeZone>')
+Check 'tierA no disk wipe'    (-not ($uaA -match 'WillWipeDisk'))
+$uaB = New-UnattendXml -Architecture 'amd64' -UserName 'Tester' -Password 'p@ss' -TimeZone 'UTC' -Language 'en-US' -ZeroTouch
+$okB = $true; try { $null = [xml]$uaB } catch { $okB = $false }
+Check 'tierB well-formed xml' $okB
+Check 'tierB arch amd64'      ($uaB -match 'processorArchitecture="amd64"')
+Check 'tierB disk wipe'       ($uaB -match '<WillWipeDisk>true</WillWipeDisk>')
+Check 'tierB installto part3' ($uaB -match '<PartitionID>3</PartitionID>')
+Check 'tierB user name'       ($uaB -match '<Name>Tester</Name>')
+$uaE = New-UnattendXml -Architecture 'amd64' -UserName 'a&b' -Password '' -TimeZone 'UTC' -Language 'en-US'
+$okE = $true; try { $null = [xml]$uaE } catch { $okE = $false }
+Check 'escaped user parses'   $okE
+Check 'escaped user amp'      ($uaE -match '<Name>a&amp;b</Name>')
+
 Write-Host '== maker parity: Resolve-BuildProfile =='
 $makerPath = Join-Path $repo 'tiny11maker.ps1'
 $mtk = $null; $mer = $null

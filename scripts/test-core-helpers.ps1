@@ -87,6 +87,33 @@ CheckThrows 'missing path throws' { Assert-WinSxSRebuild -Path (Join-Path $tmp '
 
 Remove-Item $tmp, $noStack, $noMeta -Recurse -Force -ErrorAction SilentlyContinue
 
+Write-Host '== Resolve-BuildProfile =='
+$p = Resolve-BuildProfile
+Check 'default compress recovery'      ($p.Compress -eq 'recovery')
+Check 'default does not skip cleanup'  ($p.SkipCleanup -eq $false)
+Check 'default uses esd'               ($p.UseEsd -eq $true)
+Check 'default wim export max'         ($p.WimExportCompress -eq 'max')
+$p = Resolve-BuildProfile -Fast
+Check '-Fast compress fast'            ($p.Compress -eq 'fast')
+Check '-Fast skips cleanup'            ($p.SkipCleanup -eq $true)
+Check '-Fast no esd'                   ($p.UseEsd -eq $false)
+Check '-Fast wim export fast'          ($p.WimExportCompress -eq 'fast')
+$p = Resolve-BuildProfile -Compress 'none'
+Check '-Compress none'                 ($p.Compress -eq 'none')
+Check '-Compress none no esd'          ($p.UseEsd -eq $false)
+Check '-Compress none not skipclean'   ($p.SkipCleanup -eq $false)
+$p = Resolve-BuildProfile -Compress 'none' -Fast
+Check 'explicit compress overrides Fast' ($p.Compress -eq 'none')
+Check 'Fast still skips cleanup w/ explicit compress' ($p.SkipCleanup -eq $true)
+CheckThrows 'invalid compress throws'  { Resolve-BuildProfile -Compress 'zip' }
+
+Write-Host '== Test-RobocopySucceeded =='
+Check 'rc 0 success'  (Test-RobocopySucceeded 0)
+Check 'rc 1 success'  (Test-RobocopySucceeded 1)
+Check 'rc 7 success'  (Test-RobocopySucceeded 7)
+Check 'rc 8 failure'  (-not (Test-RobocopySucceeded 8))
+Check 'rc 16 failure' (-not (Test-RobocopySucceeded 16))
+
 Write-Host ""
 Write-Host "RESULT: $script:pass passed, $script:fail failed"
 if ($script:fail) { exit 1 }

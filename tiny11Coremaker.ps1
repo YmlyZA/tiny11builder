@@ -194,6 +194,46 @@ function Assert-WinSxSRebuild {
     }
 }
 
+function Resolve-BuildProfile {
+    # Resolve the effective image-compression settings from -Compress and -Fast.
+    # Default is 'recovery' (current behavior). -Fast implies 'fast' unless -Compress
+    # is given explicitly. WimExportCompress is the value for the intermediate WIM
+    # re-export ('max' for the recovery profile, else the effective value); UseEsd is
+    # true only for 'recovery' (the final ESD conversion stage).
+    param([string]$Compress, [switch]$Fast)
+    $valid = 'recovery', 'fast', 'none'
+    if ($Compress -and ($valid -notcontains $Compress)) {
+        throw "Invalid -Compress '$Compress'. Valid values: $($valid -join ', ')"
+    }
+    $effective = if ($Compress) { $Compress } elseif ($Fast) { 'fast' } else { 'recovery' }
+    [pscustomobject]@{
+        Compress          = $effective
+        SkipCleanup       = [bool]$Fast
+        UseEsd            = ($effective -eq 'recovery')
+        WimExportCompress = if ($effective -eq 'recovery') { 'max' } else { $effective }
+    }
+}
+
+function Test-RobocopySucceeded {
+    # robocopy uses exit codes 0-7 for success (files copied, extras, etc.) and
+    # >=8 for genuine failures.
+    param([int]$ExitCode)
+    return ($ExitCode -lt 8)
+}
+
+function Invoke-Robocopy {
+    # Multithreaded recursive copy. robocopy is a built-in Microsoft tool and is far
+    # faster than Copy-Item for the ~6 GB ISO copy. Throws on a real failure; resets
+    # $LASTEXITCODE to 0 on success so downstream exit-code checks are not confused.
+    param([Parameter(Mandatory = $true)][string]$Source,
+          [Parameter(Mandatory = $true)][string]$Destination)
+    & robocopy.exe $Source $Destination '/E' '/MT' '/R:3' '/W:3' '/NFL' '/NDL' '/NJH' '/NJS' '/NP' | Out-Null
+    if (-not (Test-RobocopySucceeded $LASTEXITCODE)) {
+        throw "robocopy failed (exit code $LASTEXITCODE) copying '$Source' -> '$Destination'."
+    }
+    $global:LASTEXITCODE = 0
+}
+
 Start-Transcript -Path "$PSScriptRoot\tiny11.log"
 # Ask the user for input
 Write-Host "Welcome to tiny11 core builder! BETA 09-05-25"

@@ -177,6 +177,28 @@ you in seconds whether a real build would succeed:
 
     .\tiny11Coremaker.ps1 -ISO E -Index 3 -DryRun
 
+### Unattended install
+
+Both builders now bake a complete, architecture-aware answer file into the image,
+so Windows installs to the desktop with no OOBE clicks:
+
+- **Default (OOBE skip):** language, EULA, region, keyboard, network, account
+  creation, privacy, and time zone are all handled automatically. A local
+  **administrator** account is created and **auto-logged in**; only the disk-
+  selection screen remains. Override the defaults with:
+  - `-User <name>`   (default `User`)
+  - `-Password <pwd>` (default blank; AutoLogon is always on)
+  - `-TimeZone <id>`  (default `UTC`)
+- **`-ZeroTouch` (zero-click, DESTRUCTIVE):** also wipes **disk 0** and lays down
+  a clean UEFI layout, so booting the ISO installs straight to the desktop with
+  no interaction. Intended for VMs / dedicated test machines only — it erases
+  disk 0 without prompting. The build prints a warning when this is set.
+
+    .\tiny11Coremaker.ps1 -ISO E -Index 1 -Yes -ZeroTouch
+
+The password is stored in the answer file as plaintext (fine for throwaway test
+images). `-DryRun` reports the user, time zone, and install mode.
+
 ## Known issues:
 - Although Edge is removed, there are some remnants in the Settings, but the app in itself is deleted. 
 - You might have to update Winget before being able to install any apps, using Microsoft Store.

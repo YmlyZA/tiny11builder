@@ -369,6 +369,9 @@ function Test-IsoResult {
     return ($ExitCode -eq 0 -and $IsoExists -and $IsoBytes -gt 0)
 }
 
+# Close any transcript leaked by a prior aborted run in this same session,
+# so this run always starts its own clean transcript.
+Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
 Start-Transcript -Path "$PSScriptRoot\tiny11.log"
 $buildStart = Get-Date
 $script:buildWarnings = 0
@@ -485,7 +488,7 @@ if ($DryRun) {
     Write-Host "  Planned steps: copy image -> mount install.wim -> remove Appx -> remove system packages -> (optional .NET) -> remove Edge/OneDrive/WinRE -> rebuild WinSxS -> registry tweaks -> $(if ($buildProfile.SkipCleanup) { 'skip cleanup' } else { 'component cleanup' }) -> unmount/commit -> export ($($buildProfile.Compress)) -> bypass boot.wim -> create ISO"
     Write-Host "===== END DRY RUN ====="
     $dryRunFailed = (-not $preflightImage) -or ($Index -and -not $indexOk) -or (-not $spaceOk)
-    Stop-Transcript
+    Stop-Transcript -ErrorAction SilentlyContinue
     if ($dryRunFailed) { exit 1 } else { exit 0 }
 }
 
@@ -726,9 +729,9 @@ else {
     Write-Host "Invalid input. Please enter 'y' to enable .NET 3.5 or 'n' to continue without installing .net 3.5."
 }
 Write-Host "Removing Edge:"
-Remove-Item -Path "$mainOSDrive\scratchdir\Program Files (x86)\Microsoft\Edge" -Recurse -Force > $null
-Remove-Item -Path "$mainOSDrive\scratchdir\Program Files (x86)\Microsoft\EdgeUpdate" -Recurse -Force > $null
-Remove-Item -Path "$mainOSDrive\scratchdir\Program Files (x86)\Microsoft\EdgeCore" -Recurse -Force > $null
+Remove-Item -Path "$mainOSDrive\scratchdir\Program Files (x86)\Microsoft\Edge" -Recurse -Force -ErrorAction SilentlyContinue > $null
+Remove-Item -Path "$mainOSDrive\scratchdir\Program Files (x86)\Microsoft\EdgeUpdate" -Recurse -Force -ErrorAction SilentlyContinue > $null
+Remove-Item -Path "$mainOSDrive\scratchdir\Program Files (x86)\Microsoft\EdgeCore" -Recurse -Force -ErrorAction SilentlyContinue > $null
 # NOTE: the Edge WebView component under WinSxS is intentionally NOT deleted here.
 # tiny11 Core rebuilds WinSxS from an allowlist further down (copy allowlist to
 # WinSxS_edit -> delete the old WinSxS -> rename), and edge-webview is not in that
@@ -737,18 +740,18 @@ Remove-Item -Path "$mainOSDrive\scratchdir\Program Files (x86)\Microsoft\EdgeCor
 # EBWebView files before the WinSxS-wide takeown runs, it produced ~900 "Access
 # denied" errors per run. The System32 copy below is a different path that the
 # rebuild does NOT cover, so that removal stays.
-& 'takeown' '/f' "$mainOSDrive\scratchdir\Windows\System32\Microsoft-Edge-Webview" '/r'
-& 'icacls' "$mainOSDrive\scratchdir\Windows\System32\Microsoft-Edge-Webview" '/grant' "$($adminGroup.Value):(F)" '/T' '/C'
-Remove-Item -Path "$mainOSDrive\scratchdir\Windows\System32\Microsoft-Edge-Webview" -Recurse -Force
+& 'takeown' '/f' "$mainOSDrive\scratchdir\Windows\System32\Microsoft-Edge-Webview" '/r' 2>$null
+& 'icacls' "$mainOSDrive\scratchdir\Windows\System32\Microsoft-Edge-Webview" '/grant' "$($adminGroup.Value):(F)" '/T' '/C' 2>$null
+Remove-Item -Path "$mainOSDrive\scratchdir\Windows\System32\Microsoft-Edge-Webview" -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host "Removing WinRE"
 & 'takeown' '/f' "$mainOSDrive\scratchdir\Windows\System32\Recovery" '/r'
 & 'icacls' "$mainOSDrive\scratchdir\Windows\System32\Recovery" '/grant' 'Administrators:F' '/T' '/C'
-Remove-Item -Path "$mainOSDrive\scratchdir\Windows\System32\Recovery\winre.wim" -Recurse -Force
+Remove-Item -Path "$mainOSDrive\scratchdir\Windows\System32\Recovery\winre.wim" -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -Path "$mainOSDrive\scratchdir\Windows\System32\Recovery\winre.wim" -ItemType File -Force
 Write-Host "Removing OneDrive:"
-& 'takeown' '/f' "$mainOSDrive\scratchdir\Windows\System32\OneDriveSetup.exe" > $null
-& 'icacls' "$mainOSDrive\scratchdir\Windows\System32\OneDriveSetup.exe" '/grant' "$($adminGroup.Value):(F)" '/T' '/C' > $null
-Remove-Item -Path "$mainOSDrive\scratchdir\Windows\System32\OneDriveSetup.exe" -Force > $null
+& 'takeown' '/f' "$mainOSDrive\scratchdir\Windows\System32\OneDriveSetup.exe" > $null 2>$null
+& 'icacls' "$mainOSDrive\scratchdir\Windows\System32\OneDriveSetup.exe" '/grant' "$($adminGroup.Value):(F)" '/T' '/C' > $null 2>$null
+Remove-Item -Path "$mainOSDrive\scratchdir\Windows\System32\OneDriveSetup.exe" -Force -ErrorAction SilentlyContinue > $null
 Write-Host "Removal complete!"
 Start-Sleep -Seconds 2
 Clear-Host
@@ -819,11 +822,6 @@ if ($architecture -eq "amd64") {
         "x86_microsoft.windows.gdiplus_6595b64144ccf1df_*"
         "x86_microsoft.windows.i..utomation.proxystub_6595b64144ccf1df_*"
         "x86_microsoft.windows.isolationautomation_6595b64144ccf1df_*"
-        "arm_microsoft.windows.c..-controls.resources_6595b64144ccf1df_*"
-        "arm_microsoft.windows.common-controls_6595b64144ccf1df_*"
-        "arm_microsoft.windows.gdiplus_6595b64144ccf1df_*"
-        "arm_microsoft.windows.i..utomation.proxystub_6595b64144ccf1df_*"
-        "arm_microsoft.windows.isolationautomation_6595b64144ccf1df_*"
         "arm64_microsoft.vc80.crt_1fc8b3b9a1e18e3b_*"
         "arm64_microsoft.vc90.crt_1fc8b3b9a1e18e3b_*"
         "arm64_microsoft.windows.c..-controls.resources_6595b64144ccf1df_*"
@@ -1123,7 +1121,7 @@ finally {
     # transcript - on both the success and failure paths.
     Remove-OfflineHives
     Dismount-OfflineImage -MountDir "$mainOSDrive\scratchdir"
-    Stop-Transcript
+    Stop-Transcript -ErrorAction SilentlyContinue
 }
 
 if ($script:buildFailed) { exit 1 } else { exit }

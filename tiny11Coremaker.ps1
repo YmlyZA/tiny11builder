@@ -391,14 +391,56 @@ if (-not (Test-Path "$DriveLetter\")) {
     throw "Image drive '$DriveLetter' was not found. Mount the Windows 11 ISO and pass its drive letter via -ISO (or at the prompt)."
 }
 
+# ---- Pre-flight validation (runs before the copy; also what -DryRun reports) ----
+# Read the SOURCE image straight off the ISO so a bad index / too-small scratch /
+# missing oscdimg is caught in seconds instead of after the multi-minute copy.
+$srcInstallWim  = "$DriveLetter\sources\install.wim"
+$srcInstallEsd  = "$DriveLetter\sources\install.esd"
+$preflightImage = if (Test-Path $srcInstallWim) { $srcInstallWim } elseif (Test-Path $srcInstallEsd) { $srcInstallEsd } else { $null }
+
+$availableIndexes = @()
+if ($preflightImage) {
+    $wimInfoText = & 'dism' '/English' '/Get-WimInfo' "/wimfile:$preflightImage" 2>&1
+    $availableIndexes = Get-AvailableImageIndex $wimInfoText
+}
+$ImagesIndex = @($availableIndexes.Index)
+
+$indexOk  = (-not $Index) -or (Test-ImageIndexAvailable $Index $availableIndexes)
+$indexMsg = if ($availableIndexes.Count) {
+    "Available indexes: " + (($availableIndexes | ForEach-Object { "$($_.Index) = $($_.Name)" }) -join '; ')
+} else { "Could not read any image indexes from '$preflightImage'." }
+
+$chosenSizeBytes = if ($Index) {
+    [long](($availableIndexes | Where-Object Index -eq $Index | Select-Object -First 1).SizeBytes)
+} elseif ($availableIndexes.Count) {
+    [long](($availableIndexes.SizeBytes | Measure-Object -Maximum).Maximum)
+} else { [long]0 }
+$requiredBytes = Get-RequiredScratchBytes $chosenSizeBytes
+$scratchQualifier = Split-Path -Qualifier $mainOSDrive
+$freeBytes = [long]((Get-PSDrive -Name ($scratchQualifier.TrimEnd(':')) -ErrorAction SilentlyContinue).Free)
+$space   = Test-SufficientScratch $requiredBytes $freeBytes
+$spaceOk = $space.Ok
+
+$adkOscdimg     = "C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\$hostArchitecture\Oscdimg\oscdimg.exe"
+$bundledOscdimg = "$PSScriptRoot\oscdimg.exe"
+$oscdimgSource  = Resolve-OscdimgSource (Test-Path $adkOscdimg) (Test-Path $bundledOscdimg)
+$oscdimgOk      = ($oscdimgSource -ne 'download')
+
 if ($DryRun) {
-    $drOpt = Resolve-OptionalUtilities -Keep $Keep -Remove $Remove
+    $drOpt  = Resolve-OptionalUtilities -Keep $Keep -Remove $Remove
     $drBase = Get-AlwaysRemovePackages
     Write-Host ""
     Write-Host "===== DRY RUN (no copy / no mount performed) ====="
     Write-Host "  Image drive (-ISO)   : $DriveLetter"
     Write-Host "  Scratch (-SCRATCH)   : $mainOSDrive"
     Write-Host ("  Image index (-Index) : {0}" -f $(if ($Index) { $Index } else { '(prompt at build time)' }))
+    if ($Index -and -not $indexOk) {
+        Write-Host "     ERROR: index $Index not found. $indexMsg"
+    } elseif ($availableIndexes.Count) {
+        Write-Host "     [OK] image has indexes: $($ImagesIndex -join ', ')"
+    }
+    Write-Host ("  Scratch free space   : {0} GB free, ~{1} GB required  [{2}]" -f $space.FreeGB, $space.RequiredGB, $(if ($spaceOk) { 'OK' } else { 'INSUFFICIENT' }))
+    Write-Host ("  ISO builder (oscdimg): {0}  [{1}]" -f $oscdimgSource, $(if ($oscdimgOk) { 'OK' } else { 'will download at build time' }))
     Write-Host "  Compression          : $($buildProfile.Compress)  (ESD: $($buildProfile.UseEsd))"
     Write-Host "  Skip component cleanup: $($buildProfile.SkipCleanup)"
     Write-Host "  Enable .NET 3.5      : $([bool]$EnableNet35)"
@@ -406,10 +448,35 @@ if ($DryRun) {
     Write-Host "  Optional utilities REMOVED: $($drOpt.RemovePrefixes -join ', ')"
     Write-Host "  Always-remove Appx packages ($($drBase.Count)):"
     $drBase | ForEach-Object { Write-Host "    - $_" }
+    if (-not $preflightImage) { Write-Host "     ERROR: no install.wim or install.esd under $DriveLetter\sources." }
     Write-Host "  Planned steps: copy image -> mount install.wim -> remove Appx -> remove system packages -> (optional .NET) -> remove Edge/OneDrive/WinRE -> rebuild WinSxS -> registry tweaks -> $(if ($buildProfile.SkipCleanup) { 'skip cleanup' } else { 'component cleanup' }) -> unmount/commit -> export ($($buildProfile.Compress)) -> bypass boot.wim -> create ISO"
     Write-Host "===== END DRY RUN ====="
+    $dryRunFailed = (-not $preflightImage) -or ($Index -and -not $indexOk) -or (-not $spaceOk)
     Stop-Transcript
-    exit 0
+    if ($dryRunFailed) { exit 1 } else { exit 0 }
+}
+
+# Enforce the pre-flight results for a real build (dry run already returned above).
+if (-not $preflightImage) {
+    throw "No install.wim or install.esd found under $DriveLetter\sources. Check the -ISO drive letter."
+}
+if ($Index -and -not $indexOk) {
+    throw "Image index $Index not found in the Windows image. $indexMsg"
+}
+if (-not $spaceOk) {
+    throw ("Not enough free space on scratch drive $mainOSDrive : ~{0} GB required, {1} GB available. Use -SCRATCH to point at a larger drive." -f $space.RequiredGB, $space.FreeGB)
+}
+if (-not $oscdimgOk) {
+    Write-Warning "Neither the Windows ADK nor a bundled oscdimg.exe was found; the ISO step will attempt to download oscdimg.exe at the end of the build."
+}
+
+# Resolve the image index once (validated against the source image), used by both
+# the ESD->WIM conversion and the mount. Interactive entry re-prompts until valid.
+if ($Index) { $imageIndex = $Index }
+while ($ImagesIndex -notcontains $imageIndex) {
+    if ($Yes) { throw "Image index '$imageIndex' not found in install.wim; pass a valid -Index for unattended runs." }
+    & 'dism' '/English' '/Get-WimInfo' "/wimfile:$preflightImage"
+    $imageIndex = Read-Host "Please enter the image index"
 }
 
 # Everything from here on touches a mounted image and/or loaded offline hives.
@@ -422,7 +489,6 @@ if ((Test-Path "$DriveLetter\sources\boot.wim") -eq $false -or (Test-Path "$Driv
     if ((Test-Path "$DriveLetter\sources\install.esd") -eq $true) {
         Write-Host "Found install.esd, converting to install.wim..."
         &  'dism' '/English' "/Get-WimInfo" "/wimfile:$DriveLetter\sources\install.esd"
-        if ($Index) { $imageIndex = $Index } else { $imageIndex = Read-Host "Please enter the image index" }
         Write-Host ' '
         Write-Host 'Converting install.esd to install.wim. This may take a while...'
         Invoke-Dism /Export-Image /SourceImageFile:"$DriveLetter\sources\install.esd" /SourceIndex:$imageIndex /DestinationImageFile:"$mainOSDrive\tiny11\sources\install.wim" /Compress:max /CheckIntegrity
@@ -440,7 +506,6 @@ Start-Sleep -Seconds 2
 Clear-Host
 Write-Host "Getting image information:"
 &  'dism' '/English' "/Get-WimInfo" "/wimfile:$mainOSDrive\tiny11\sources\install.wim"
-if ($Index) { $imageIndex = $Index } else { $imageIndex = Read-Host "Please enter the image index" }
 Write-Host "Mounting Windows image. This may take a while."
 $wimFilePath = "$mainOSDrive\tiny11\sources\install.wim" 
 & takeown "/F" $wimFilePath 

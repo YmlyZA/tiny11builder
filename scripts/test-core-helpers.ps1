@@ -181,12 +181,18 @@ Check 'summary warn none'     ($bs0 -contains '  Warnings      : none')
 Check 'summary size 2.00 GB'  ($bs0 -contains '  Output ISO    : C:\a.iso  (2.00 GB)')
 Check 'summary elapsed 5m 3s' ($bs0 -contains '  Elapsed       : 5m 3s')
 
+Write-Host '== Test-IsoResult =='
+Check 'iso ok'           (Test-IsoResult -ExitCode 0 -IsoExists $true  -IsoBytes 100)
+Check 'iso bad exit'     (-not (Test-IsoResult -ExitCode 1 -IsoExists $true  -IsoBytes 100))
+Check 'iso missing file' (-not (Test-IsoResult -ExitCode 0 -IsoExists $false -IsoBytes 0))
+Check 'iso empty file'   (-not (Test-IsoResult -ExitCode 0 -IsoExists $true  -IsoBytes 0))
+
 Write-Host '== maker parity: Resolve-BuildProfile =='
 $makerPath = Join-Path $repo 'tiny11maker.ps1'
 $mtk = $null; $mer = $null
 $mast = [System.Management.Automation.Language.Parser]::ParseFile($makerPath, [ref]$mtk, [ref]$mer)
 $mast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
-    Where-Object { $_.Name -in 'Resolve-BuildProfile', 'Test-RobocopySucceeded', 'Get-AvailableImageIndex', 'Test-ImageIndexAvailable', 'Get-RequiredScratchBytes', 'Test-SufficientScratch', 'Resolve-OscdimgSource', 'Format-BuildSummary' } |
+    Where-Object { $_.Name -in 'Resolve-BuildProfile', 'Test-RobocopySucceeded', 'Get-AvailableImageIndex', 'Test-ImageIndexAvailable', 'Get-RequiredScratchBytes', 'Test-SufficientScratch', 'Resolve-OscdimgSource', 'Format-BuildSummary', 'Test-IsoResult' } |
     ForEach-Object { Invoke-Expression ($_.Extent.Text -replace 'function\s+(\S+)', 'function maker_$1') }
 $mp = maker_Resolve-BuildProfile -Fast
 Check 'maker -Fast compress fast' ($mp.Compress -eq 'fast')
@@ -204,6 +210,8 @@ $mSummary = maker_Format-BuildSummary -Elapsed (New-TimeSpan -Minutes 1 -Seconds
 Check 'maker summary success'  ($mSummary -contains '  Result        : SUCCESS')
 Check 'maker summary size 1GB' ($mSummary -contains '  Output ISO    : C:\a.iso  (1.00 GB)')
 Check 'maker summary apps 5/5' ($mSummary -contains '  Apps removed  : 5 of 5 provisioned Appx')
+Check 'maker iso ok'       (maker_Test-IsoResult -ExitCode 0 -IsoExists $true -IsoBytes 100)
+Check 'maker iso bad exit' (-not (maker_Test-IsoResult -ExitCode 1 -IsoExists $true -IsoBytes 100))
 
 Write-Host ""
 Write-Host "RESULT: $script:pass passed, $script:fail failed"

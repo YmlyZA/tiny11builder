@@ -178,7 +178,7 @@ function Format-BuildSummary {
         [int]$Warnings
     )
     $elapsedText = "{0}m {1}s" -f [int][math]::Floor($Elapsed.TotalMinutes), $Elapsed.Seconds
-    $sizeText    = "{0:N2} GB" -f ($IsoBytes / 1GB)
+    $sizeText    = "{0} GB" -f (($IsoBytes / 1GB).ToString('N2', [System.Globalization.CultureInfo]::InvariantCulture))
     $warnText    = if ($Warnings -eq 0) { 'none' } else { "$Warnings non-fatal (see log)" }
     return @(
         "===== BUILD SUMMARY =====",
@@ -189,6 +189,12 @@ function Format-BuildSummary {
         "  Warnings      : $warnText",
         "========================="
     )
+}
+
+function Test-IsoResult {
+    # The ISO step succeeded only if oscdimg exited 0 AND a non-empty file exists.
+    param([int]$ExitCode, [bool]$IsoExists, [long]$IsoBytes)
+    return ($ExitCode -eq 0 -and $IsoExists -and $IsoBytes -gt 0)
 }
 
 #---------[ Execution ]---------#
@@ -365,6 +371,9 @@ if ((Test-Path "$DriveLetter\sources\boot.wim") -eq $false -or (Test-Path "$Driv
         Write-Output ' '
         Write-Output 'Converting install.esd to install.wim. This may take a while...'
         Export-WindowsImage -SourceImagePath $DriveLetter\sources\install.esd -SourceIndex $imageIndex -DestinationImagePath $ScratchDisk\tiny11\sources\install.wim -Compressiontype Maximum -CheckIntegrity
+        # The exported WIM holds the chosen edition as its only image (index 1);
+        # mount and re-export must target index 1, not the source ESD's index.
+        $imageIndex = 1
     } else {
         Write-Output "Can't find Windows OS Installation files in the specified Drive Letter.."
         Write-Output "Please enter the correct DVD Drive Letter.."
@@ -717,6 +726,13 @@ if ([System.IO.Directory]::Exists($ADKDepTools)) {
 }
 
 & "$OSCDIMG" '-m' '-o' '-u2' '-udfver102' "-bootdata:2#p0,e,b$ScratchDisk\tiny11\boot\etfsboot.com#pEF,e,b$ScratchDisk\tiny11\efi\microsoft\boot\efisys.bin" "$ScratchDisk\tiny11" "$PSScriptRoot\tiny11.iso"
+$isoExit   = $LASTEXITCODE
+$isoResult = "$PSScriptRoot\tiny11.iso"
+$isoOk     = Test-Path $isoResult
+$isoLen    = if ($isoOk) { (Get-Item $isoResult).Length } else { [long]0 }
+if (-not (Test-IsoResult -ExitCode $isoExit -IsoExists $isoOk -IsoBytes $isoLen)) {
+    throw "ISO creation failed (oscdimg exit $isoExit); no valid tiny11.iso was produced at $isoResult."
+}
 
 $elapsed  = (Get-Date) - $buildStart
 $isoPath  = "$PSScriptRoot\tiny11.iso"

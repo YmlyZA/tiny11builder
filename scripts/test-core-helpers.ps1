@@ -197,6 +197,8 @@ Check 'tierA autologon'       ($uaA -match '<AutoLogon>')
 Check 'tierA user name'       ($uaA -match '<Name>User</Name>')
 Check 'tierA timezone'        ($uaA -match '<TimeZone>UTC</TimeZone>')
 Check 'tierA no disk wipe'    (-not ($uaA -match 'WillWipeDisk'))
+Check 'no product key element' (-not ($uaA -match '<ProductKey>'))
+Check 'accepts eula'           ($uaA -match '<AcceptEula>true</AcceptEula>')
 $uaB = New-UnattendXml -Architecture 'amd64' -UserName 'Tester' -Password 'p@ss' -TimeZone 'UTC' -Language 'en-US' -ZeroTouch
 $okB = $true; try { $null = [xml]$uaB } catch { $okB = $false }
 Check 'tierB well-formed xml' $okB

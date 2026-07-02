@@ -259,7 +259,6 @@ function New-UnattendXml {
         </component>
         <component name="Microsoft-Windows-Setup" processorArchitecture="$Architecture" $common>
             <UserData>
-                <ProductKey><Key></Key></ProductKey>
                 <AcceptEula>true</AcceptEula>
             </UserData>
             <ImageInstall>

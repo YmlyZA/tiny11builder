@@ -13,6 +13,27 @@
 .PARAMETER SCRATCH
     Drive letter of the desired scratch disk (eg: D)
 
+.PARAMETER Index
+    Image index to build.
+.PARAMETER Yes
+    Non-interactive: skip prompts; requires -ISO and -Index.
+.PARAMETER DryRun
+    Print the build plan and exit without copying or mounting (fast sanity check).
+.PARAMETER Compress
+    Image compression: recovery (default), fast, or none.
+.PARAMETER Fast
+    'fast' compression plus skip component cleanup.
+.PARAMETER User
+    Local administrator account created by the unattended answer file (default: User).
+.PARAMETER Password
+    Password for that account (default: blank; AutoLogon is always enabled).
+.PARAMETER TimeZone
+    Windows time-zone id set during OOBE (default: UTC; e.g. "China Standard Time").
+.PARAMETER ZeroTouch
+    Also wipe disk 0 and install with zero clicks (DESTRUCTIVE; VMs/test machines only).
+.PARAMETER Help
+    Show usage and exit.
+
 .EXAMPLE
     .\tiny11maker.ps1 E D
     .\tiny11maker.ps1 -ISO E -SCRATCH D
@@ -39,8 +60,43 @@ param (
     [string]$User = 'User',
     [string]$Password = '',
     [string]$TimeZone = 'UTC',
-    [switch]$ZeroTouch
+    [switch]$ZeroTouch,
+    [switch]$Help
 )
+
+function Show-Usage {
+    Write-Output @'
+tiny11 builder - build a trimmed-down, still-serviceable Windows 11 image.
+
+USAGE:
+  .\tiny11maker.ps1 -ISO <drive> -Index <n> [options]
+
+REQUIRED (or you will be prompted):
+  -ISO <letter>        Drive letter of the mounted Windows 11 ISO (e.g. D)
+  -Index <n>           Image index to build (an ISO can hold several editions)
+
+COMMON:
+  -Yes                 Non-interactive; requires -ISO and -Index
+  -DryRun              Print the build plan and exit (no copy/mount) - fast sanity check
+  -Fast                'fast' compression + skip component cleanup
+  -Compress <recovery|fast|none>   Image compression (default: recovery)
+  -SCRATCH <letter>    Scratch/work drive (default: the script folder's drive)
+
+UNATTENDED INSTALL (baked into the image):
+  -User <name>         Local admin account (default: User)
+  -Password <pwd>      Account password (default: blank; AutoLogon is always on)
+  -TimeZone <id>       Windows time-zone id (default: UTC; e.g. "China Standard Time"). List: tzutil /l
+  -ZeroTouch           Also WIPE DISK 0 and install with zero clicks (DESTRUCTIVE; VMs/test only)
+
+  -Help                Show this help and exit
+
+EXAMPLES:
+  .\tiny11maker.ps1 -ISO D -Index 1 -Yes -DryRun
+  .\tiny11maker.ps1 -ISO D -Index 1 -Yes
+  .\tiny11maker.ps1 -ISO D -Index 1 -Yes -Fast -ZeroTouch -User Bob -Password "P@ssw0rd" -TimeZone "China Standard Time"
+'@
+}
+if ($Help) { Show-Usage; exit 0 }
 
 if (-not $SCRATCH) {
     $ScratchDisk = $PSScriptRoot -replace '[\\]+$', ''
